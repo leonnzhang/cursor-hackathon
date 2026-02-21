@@ -46,7 +46,11 @@ export interface UserProfile {
   fullName: string
   email: string
   phone: string
-  location: string
+  city: string
+  state: string
+  country: string
+  zipCode: string
+  streetAddress: string
   linkedin: string
   github: string
   portfolio: string
@@ -85,8 +89,9 @@ export interface AgentAction {
 }
 
 export interface PlanResult {
-  source: "webllm" | "rule-based"
+  source: "webllm" | "rule-based" | "hybrid"
   actions: AgentAction[]
+  llmDetail?: string
 }
 
 export interface ActionLogEntry {

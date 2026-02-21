@@ -2,7 +2,8 @@ import {
   CreateMLCEngine,
   prebuiltAppConfig,
   type InitProgressReport,
-  type MLCEngine
+  type MLCEngine,
+  type ResponseFormat
 } from "@mlc-ai/web-llm"
 
 type LlmStatus =
@@ -11,14 +12,35 @@ type LlmStatus =
   | { state: "ready"; detail: string; progress: number; modelId: string }
   | { state: "error"; detail: string; progress: number; modelId: string }
 
-const PREFERRED_MODEL_HINTS = [
-  "smollm2-360m",
-  "smollm2"
+export interface CuratedModel {
+  id: string
+  label: string
+}
+
+const MODEL_HINTS: Array<{ hint: string; label: string }> = [
+  { hint: "smollm2-360m", label: "SmolLM2 360M (fastest)" },
+  { hint: "smollm2-1.7b", label: "SmolLM2 1.7B" },
+  { hint: "qwen2.5-1.5b", label: "Qwen 2.5 1.5B" },
+  { hint: "qwen2.5-0.5b", label: "Qwen 2.5 0.5B" },
 ]
+
+export const getCuratedModels = (): CuratedModel[] => {
+  const allModels = prebuiltAppConfig.model_list.map((m) => m.model_id)
+  const lower = new Map(allModels.map((id) => [id.toLowerCase(), id] as const))
+  const result: CuratedModel[] = []
+  for (const { hint, label } of MODEL_HINTS) {
+    const match = Array.from(lower.keys()).find((k) => k.includes(hint))
+    if (match) {
+      result.push({ id: lower.get(match)!, label })
+    }
+  }
+  return result
+}
 
 let engine: MLCEngine | null = null
 let pendingLoad: Promise<MLCEngine> | null = null
 let currentModelId = ""
+let userModelOverride: string | null = null
 
 let status: LlmStatus = {
   state: "idle",
@@ -27,13 +49,27 @@ let status: LlmStatus = {
   modelId: ""
 }
 
+export const setPreferredModel = (modelId: string) => {
+  if (engine && currentModelId !== modelId) {
+    engine = null
+    pendingLoad = null
+    status = { state: "idle", detail: "Model changed, needs reload", progress: 0, modelId: "" }
+  }
+  userModelOverride = modelId
+}
+
 const chooseModelId = () => {
   const allModels = prebuiltAppConfig.model_list.map((model) => model.model_id)
+
+  if (userModelOverride && allModels.includes(userModelOverride)) {
+    return userModelOverride
+  }
+
   const lowerToOriginal = new Map(
     allModels.map((modelId) => [modelId.toLowerCase(), modelId] as const)
   )
 
-  for (const hint of PREFERRED_MODEL_HINTS) {
+  for (const { hint } of MODEL_HINTS) {
     const match = Array.from(lowerToOriginal.keys()).find((modelId) =>
       modelId.includes(hint)
     )
@@ -53,6 +89,8 @@ const chooseModelId = () => {
 }
 
 export const getWebLlmStatus = () => status
+
+export const isModelReady = () => status.state === "ready" && engine !== null
 
 const updateStatusFromProgress = (modelId: string, report: InitProgressReport) => {
   status = {
@@ -139,8 +177,17 @@ const normalizeAssistantText = (content: unknown) => {
   return ""
 }
 
-export const runWebLlmPrompt = async (systemPrompt: string, userPrompt: string) => {
+export const runWebLlmPrompt = async (
+  systemPrompt: string,
+  userPrompt: string,
+  jsonSchema?: string
+) => {
   const loadedEngine = await warmupWebLlm()
+
+  const responseFormat: ResponseFormat | undefined = jsonSchema
+    ? { type: "json_object", schema: jsonSchema } as ResponseFormat
+    : undefined
+
   const completion = await loadedEngine.chat.completions.create({
     model: currentModelId,
     messages: [
@@ -148,7 +195,8 @@ export const runWebLlmPrompt = async (systemPrompt: string, userPrompt: string) 
       { role: "user", content: userPrompt }
     ],
     temperature: 0.1,
-    max_tokens: 1500
+    max_tokens: 1500,
+    response_format: responseFormat
   })
 
   const content = completion.choices?.[0]?.message?.content

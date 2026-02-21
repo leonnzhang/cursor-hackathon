@@ -13,7 +13,7 @@ import {
   saveResumeRawText,
   saveWhitelist
 } from "~src/lib/storage"
-import { getWebLlmStatus, warmupWebLlm } from "~src/lib/webllm"
+import { type CuratedModel, getCuratedModels, getWebLlmStatus, isModelReady, setPreferredModel, warmupWebLlm } from "~src/lib/webllm"
 import type { ActionLogEntry, AgentAction, FormSnapshot, UserProfile } from "~src/types/agent"
 import type { AgentRequest, AgentResponse } from "~src/types/messages"
 
@@ -78,7 +78,7 @@ const ensureContentScriptInjected = async (tabId: number): Promise<void> => {
     await chrome.tabs.sendMessage(tabId, { type: "agent.ping" })
     return
   } catch {
-    /* content script not ready — inject it */
+    /* content script not ready - inject it */
   }
   const manifest = chrome.runtime.getManifest()
   const scripts = manifest.content_scripts?.[0]?.js
@@ -166,6 +166,8 @@ const SidePanelApp = () => {
   const [isBusy, setIsBusy] = useState(false)
   const [isStopped, setIsStopped] = useState(false)
   const [modelStatusMessage, setModelStatusMessage] = useState("idle")
+  const [curatedModels, setCuratedModels] = useState<CuratedModel[]>([])
+  const [selectedModel, setSelectedModel] = useState("")
 
   useEffect(() => {
     const hydrate = async () => {
@@ -178,6 +180,7 @@ const SidePanelApp = () => {
       setResumeText(storedResume.rawText)
       setResumeHighlights(storedResume.parsedHighlights)
       setWhitelistText(storedWhitelist.join("\n"))
+      setCuratedModels(getCuratedModels())
       const status = getWebLlmStatus()
       setModelStatusMessage(`${status.state}: ${status.detail}`)
     }
@@ -275,14 +278,31 @@ const SidePanelApp = () => {
         throw new Error("Capture a form snapshot first.")
       }
 
+      if (!isModelReady()) {
+        setStatusMessage("Loading model before planning...")
+        setModelStatusMessage("loading: auto-warmup for planning")
+        try {
+          await warmupWebLlm((report) => {
+            const percent = Math.round(report.progress * 100)
+            setModelStatusMessage(`loading: ${report.text} (${percent}%)`)
+          })
+          const modelStatus = getWebLlmStatus()
+          setModelStatusMessage(`${modelStatus.state}: ${modelStatus.detail}`)
+        } catch {
+          setModelStatusMessage("error: model failed to load, using rule-based fallback")
+        }
+      }
+
       const context = await loadAgentContext()
       const result = await buildActionPlan(snapshot, context)
       setActions(result.actions)
       setCurrentActionIndex(0)
       setIsStopped(false)
       setPlanningSource(result.source)
+
+      const detail = result.llmDetail ? ` — ${result.llmDetail}` : ""
       setStatusMessage(
-        `Planned ${result.actions.length} steps using ${result.source} mode.`
+        `Planned ${result.actions.length} steps using ${result.source} mode${detail}`
       )
     })
   }
@@ -363,6 +383,23 @@ const SidePanelApp = () => {
 
       <section style={sectionStyle}>
         <strong>Model</strong>
+        {curatedModels.length > 0 && (
+          <label style={{ display: "block", marginBottom: 4, marginTop: 4 }}>
+            <select
+              style={{ ...inputStyle, cursor: "pointer" }}
+              value={selectedModel}
+              onChange={(event) => {
+                setSelectedModel(event.target.value)
+                setPreferredModel(event.target.value)
+                setModelStatusMessage("idle: model changed, needs reload")
+              }}>
+              <option value="">Auto (smallest available)</option>
+              {curatedModels.map((m) => (
+                <option key={m.id} value={m.id}>{m.label}</option>
+              ))}
+            </select>
+          </label>
+        )}
         <p style={{ margin: "6px 0" }}>Status: {modelStatusMessage}</p>
         <button style={buttonStyle} onClick={handleWarmupModel} disabled={isBusy}>
           Prewarm Local WebLLM
@@ -374,7 +411,11 @@ const SidePanelApp = () => {
         {profileField(profile, "fullName", setProfile, "Full name")}
         {profileField(profile, "email", setProfile, "Email")}
         {profileField(profile, "phone", setProfile, "Phone")}
-        {profileField(profile, "location", setProfile, "Location")}
+        {profileField(profile, "streetAddress", setProfile, "Street address")}
+        {profileField(profile, "city", setProfile, "City")}
+        {profileField(profile, "state", setProfile, "State / Province")}
+        {profileField(profile, "country", setProfile, "Country")}
+        {profileField(profile, "zipCode", setProfile, "Zip / Postal code")}
         {profileField(profile, "linkedin", setProfile, "LinkedIn URL")}
         {profileField(profile, "github", setProfile, "GitHub URL")}
         {profileField(profile, "portfolio", setProfile, "Portfolio URL")}
@@ -484,7 +525,16 @@ const SidePanelApp = () => {
             Reset queue
           </button>
         </div>
-        <p style={{ margin: "8px 0 4px" }}>Planner source: {planningSource}</p>
+        <p style={{
+          margin: "8px 0 4px",
+          color: planningSource === "hybrid" ? "#027a48"
+            : planningSource === "rule-based" ? "#b54708"
+            : "#344054"
+        }}>
+          Planner: {planningSource === "hybrid" ? "hybrid (LLM + rules)"
+            : planningSource === "rule-based" ? "rule-based (LLM unavailable)"
+            : planningSource}
+        </p>
         <p style={{ margin: "4px 0" }}>
           Queue: {getQueueLabel(actions, currentActionIndex)}
         </p>

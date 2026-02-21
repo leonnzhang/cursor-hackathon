@@ -29,7 +29,11 @@ const PROFILE_HINTS: Array<{ key: keyof AgentContext["profile"]; hints: string[]
   { key: "fullName", hints: ["full name", "name", "legal name"] },
   { key: "email", hints: ["email"] },
   { key: "phone", hints: ["phone", "mobile", "telephone"] },
-  { key: "location", hints: ["location", "city", "country", "address"] },
+  { key: "city", hints: ["city", "town", "municipality"] },
+  { key: "state", hints: ["state", "province", "region", "prefecture"] },
+  { key: "country", hints: ["country", "nation"] },
+  { key: "zipCode", hints: ["zip", "postal", "postcode", "zip code", "postal code"] },
+  { key: "streetAddress", hints: ["street", "address line", "address 1", "mailing address"] },
   { key: "linkedin", hints: ["linkedin"] },
   { key: "github", hints: ["github"] },
   { key: "portfolio", hints: ["portfolio", "website", "personal site"] },
@@ -39,6 +43,9 @@ const PROFILE_HINTS: Array<{ key: keyof AgentContext["profile"]; hints: string[]
   { key: "needsSponsorship", hints: ["sponsorship", "sponsor"] },
   { key: "summary", hints: ["summary", "about", "cover letter"] }
 ]
+
+const composeLocationString = (profile: AgentContext["profile"]) =>
+  [profile.city, profile.state, profile.country].filter(Boolean).join(", ")
 
 const normalize = (value: string) => value.trim().toLowerCase()
 
@@ -56,27 +63,201 @@ const extractLikelyJson = (raw: string) => {
   return raw
 }
 
-const pickOptionValue = (field: ExtractedField, rawTarget: string) => {
-  if (!rawTarget) {
-    return ""
+const repairJson = (raw: string): string => {
+  let text = raw.trim()
+  text = text.replace(/,\s*([}\]])/g, "$1")
+  if (text.startsWith("[") && !text.endsWith("]")) {
+    const openCount = (text.match(/\[/g) ?? []).length
+    const closeCount = (text.match(/]/g) ?? []).length
+    text += "]".repeat(openCount - closeCount)
   }
+  if (text.startsWith("{") && !text.endsWith("}")) {
+    text = "[" + text + "}]"
+  }
+  text = text.replace(/'/g, '"')
+  text = text.replace(/(\w+)\s*:/g, (_match, key: string) => `"${key}":`)
+  return text
+}
+
+const wrappedSchema = z.object({ actions: llmActionListSchema })
+
+const tryParseActions = (raw: string): z.infer<typeof llmActionSchema>[] | null => {
+  const extracted = extractLikelyJson(raw)
+  for (const candidate of [extracted, repairJson(extracted), repairJson(raw)]) {
+    try {
+      const parsed = JSON.parse(candidate)
+
+      // Structured output wraps in { actions: [...] }
+      const wrapped = wrappedSchema.safeParse(parsed)
+      if (wrapped.success && wrapped.data.actions.length > 0) return wrapped.data.actions
+
+      // Direct array format (legacy / retry)
+      const direct = llmActionListSchema.safeParse(parsed)
+      if (direct.success && direct.data.length > 0) return direct.data
+    } catch { /* try next candidate */ }
+  }
+
+  const objectPattern = /\{[^{}]*"selector"\s*:\s*"[^"]+?"[^{}]*\}/g
+  const objects = raw.match(objectPattern)
+  if (objects && objects.length > 0) {
+    const partial: z.infer<typeof llmActionSchema>[] = []
+    for (const obj of objects) {
+      try {
+        const result = llmActionSchema.safeParse(JSON.parse(obj))
+        if (result.success) partial.push(result.data)
+      } catch { /* skip malformed individual object */ }
+    }
+    if (partial.length > 0) return partial
+  }
+
+  return null
+}
+
+const COUNTRY_ALIASES: Record<string, string[]> = {
+  "united states": ["us", "usa", "u.s.", "u.s.a.", "united states of america", "america"],
+  "united kingdom": ["uk", "u.k.", "great britain", "gb", "england"],
+  "canada": ["ca", "can"],
+  "australia": ["au", "aus"],
+  "germany": ["de", "deutschland"],
+  "france": ["fr"],
+  "india": ["in"],
+  "china": ["cn", "prc"],
+  "japan": ["jp", "jpn"],
+  "south korea": ["kr", "korea"],
+  "brazil": ["br"],
+  "mexico": ["mx"]
+}
+
+const jaroWinkler = (a: string, b: string): number => {
+  if (a === b) return 1
+  const aLen = a.length
+  const bLen = b.length
+  if (aLen === 0 || bLen === 0) return 0
+
+  const matchWindow = Math.max(Math.floor(Math.max(aLen, bLen) / 2) - 1, 0)
+  const aMatches = new Array<boolean>(aLen).fill(false)
+  const bMatches = new Array<boolean>(bLen).fill(false)
+
+  let matches = 0
+  let transpositions = 0
+
+  for (let i = 0; i < aLen; i++) {
+    const start = Math.max(0, i - matchWindow)
+    const end = Math.min(i + matchWindow + 1, bLen)
+    for (let j = start; j < end; j++) {
+      if (bMatches[j] || a[i] !== b[j]) continue
+      aMatches[i] = true
+      bMatches[j] = true
+      matches++
+      break
+    }
+  }
+
+  if (matches === 0) return 0
+
+  let k = 0
+  for (let i = 0; i < aLen; i++) {
+    if (!aMatches[i]) continue
+    while (!bMatches[k]) k++
+    if (a[i] !== b[k]) transpositions++
+    k++
+  }
+
+  const jaro =
+    (matches / aLen + matches / bLen + (matches - transpositions / 2) / matches) / 3
+
+  let prefix = 0
+  for (let i = 0; i < Math.min(4, Math.min(aLen, bLen)); i++) {
+    if (a[i] === b[i]) prefix++
+    else break
+  }
+
+  return jaro + prefix * 0.1 * (1 - jaro)
+}
+
+const resolveAlias = (target: string): string[] => {
+  const candidates = [target]
+  for (const [canonical, aliases] of Object.entries(COUNTRY_ALIASES)) {
+    if (target === canonical || aliases.includes(target)) {
+      candidates.push(canonical, ...aliases)
+    }
+  }
+  return [...new Set(candidates)]
+}
+
+const pickOptionValue = (field: ExtractedField, rawTarget: string): string => {
+  if (!rawTarget) return ""
   const target = normalize(rawTarget)
-  const direct = field.options.find((option) => normalize(option.value) === target)
-  if (direct) {
-    return direct.value
+
+  const exactValue = field.options.find((o) => normalize(o.value) === target)
+  if (exactValue) return exactValue.value
+
+  const exactLabel = field.options.find((o) => normalize(o.label) === target)
+  if (exactLabel) return exactLabel.value
+
+  const aliases = resolveAlias(target)
+  for (const alias of aliases) {
+    const aliasValue = field.options.find((o) => normalize(o.value) === alias)
+    if (aliasValue) return aliasValue.value
+    const aliasLabel = field.options.find((o) => normalize(o.label) === alias)
+    if (aliasLabel) return aliasLabel.value
   }
-  const labelMatch = field.options.find((option) =>
-    normalize(option.label).includes(target)
+
+  const substringLabel = field.options.find((o) =>
+    normalize(o.label).includes(target) || target.includes(normalize(o.label))
   )
-  if (labelMatch) {
-    return labelMatch.value
+  if (substringLabel) return substringLabel.value
+
+  let bestScore = 0
+  let bestOption = ""
+  for (const option of field.options) {
+    const labelScore = jaroWinkler(target, normalize(option.label))
+    const valueScore = jaroWinkler(target, normalize(option.value))
+    const score = Math.max(labelScore, valueScore)
+    if (score > bestScore) {
+      bestScore = score
+      bestOption = option.value
+    }
   }
-  const fuzzy = field.options.find(
-    (option) =>
-      target.includes(normalize(option.label)) ||
-      target.includes(normalize(option.value))
-  )
-  return fuzzy?.value ?? ""
+  if (bestScore >= 0.85) return bestOption
+
+  return ""
+}
+
+interface PreResolvedField {
+  field: ExtractedField
+  resolvedValue: string | null
+  resolvedAction: AgentAction | null
+}
+
+const preResolveSelectFields = (
+  snapshot: FormSnapshot,
+  context: AgentContext
+): PreResolvedField[] => {
+  return snapshot.fields.map((field) => {
+    if (field.kind !== "select" || hasMeaningfulValue(field)) {
+      return { field, resolvedValue: null, resolvedAction: null }
+    }
+    const profileValue = findProfileValueForField(field, context)
+    if (!profileValue) {
+      return { field, resolvedValue: null, resolvedAction: null }
+    }
+    const matched = pickOptionValue(field, profileValue)
+    if (!matched) {
+      return { field, resolvedValue: null, resolvedAction: null }
+    }
+    const matchedOption = field.options.find((o) => o.value === matched)
+    const action: AgentAction = {
+      id: crypto.randomUUID(),
+      type: "setSelect",
+      selector: field.selector,
+      fieldLabel: field.label || field.name || "select field",
+      value: matched,
+      reasoning: `Pre-resolved: "${profileValue}" → "${matchedOption?.label ?? matched}"`,
+      confidence: 0.85
+    }
+    return { field, resolvedValue: matched, resolvedAction: action }
+  })
 }
 
 const findProfileValueForField = (field: ExtractedField, context: AgentContext) => {
@@ -94,6 +275,11 @@ const findProfileValueForField = (field: ExtractedField, context: AgentContext) 
         return value
       }
     }
+  }
+
+  if (combined.includes("location") || combined.includes("address")) {
+    const composed = composeLocationString(context.profile)
+    if (composed) return composed
   }
 
   if (combined.includes("cover letter") && context.resume.rawText) {
@@ -207,14 +393,203 @@ const buildRuleBasedPlan = (snapshot: FormSnapshot, context: AgentContext): Agen
   return fieldActions
 }
 
-const systemPrompt = `You plan form-fill actions. Output ONLY a JSON array of ACTION objects. No other text.
+const ACTION_JSON_SCHEMA = JSON.stringify({
+  type: "object",
+  properties: {
+    actions: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          selector: { type: "string" },
+          type: { type: "string", enum: ["setValue", "setSelect", "setCheckbox", "setRadio", "clickNext"] },
+          fieldLabel: { type: "string" },
+          value: { type: "string" },
+          reasoning: { type: "string" },
+          confidence: { type: "number" }
+        },
+        required: ["selector", "type", "value"]
+      }
+    }
+  },
+  required: ["actions"]
+})
 
-Each action: {"selector":"...","type":"setValue"|"setSelect"|"setCheckbox"|"setRadio"|"clickNext","fieldLabel":"...","value":"...","reasoning":"...","confidence":0.8}
+const SYSTEM_PROMPT = `You review and complete a form-fill plan. Respond with a JSON object containing an "actions" array.
 
-Example for one field:
-[{"selector":"#first_name","type":"setValue","fieldLabel":"First Name","value":"John Doe","reasoning":"From profile fullName","confidence":0.9}]
+RULES:
+1. Copy selectors EXACTLY from input. Never invent selectors.
+2. For DROPDOWN fields: value MUST be one of the listed options. If no option fits, skip the field.
+3. A "city" field needs a city name, NOT a country. A "country" field needs a country, NOT a city.
+4. If the profile lacks data for a field, omit it. Set confidence below 0.5 for uncertain answers.
+5. PRE-FILLED fields: keep unless clearly wrong. If wrong, include a corrected action.
+6. UNFILLED fields: provide values from profile/resume. Use inference (e.g., derive first name from full name).
+7. Fill actions first; clickNext last. Never click Apply/Submit buttons.`
 
-Rules: Copy selectors exactly from input. Use profile/resume for value. setValue/setSelect/setCheckbox/setRadio first; clickNext last. No Apply/Submit.`
+const formatFieldForPrompt = (
+  field: ExtractedField,
+  prefilledValue?: string
+): string => {
+  const label = field.label || field.name || "?"
+  const nameTag = field.name ? ` (name="${field.name}")` : ""
+  const status = prefilledValue
+    ? `pre-filled: "${prefilledValue}"`
+    : "[needs value]"
+
+  if (field.kind === "select") {
+    const optionLabels = field.options
+      .filter((o) => o.value)
+      .slice(0, 50)
+      .map((o) => o.label || o.value)
+      .join(", ")
+    return `${field.selector} | ${label}${nameTag} | DROPDOWN pick from: [${optionLabels}] | ${status}`
+  }
+
+  if (field.kind === "checkbox") {
+    return `${field.selector} | ${label}${nameTag} | CHECKBOX (true/false) | ${status}`
+  }
+
+  if (field.kind === "radio") {
+    const optionLabels = field.options.map((o) => o.label || o.value).join(", ")
+    return `${field.selector} | ${label}${nameTag} | RADIO pick from: [${optionLabels}] | ${status}`
+  }
+
+  const typeTag = field.kind === "email" ? "EMAIL"
+    : field.kind === "tel" ? "PHONE"
+    : field.kind === "url" ? "URL"
+    : field.kind === "date" ? "DATE"
+    : "TEXT"
+  return `${field.selector} | ${label}${nameTag} | ${typeTag} | ${status}`
+}
+
+const buildHybridUserPrompt = (
+  snapshot: FormSnapshot,
+  context: AgentContext,
+  ruleActions: AgentAction[],
+  preResolved: PreResolvedField[]
+): string => {
+  const ruleMap = new Map(ruleActions.map((a) => [a.selector, a]))
+  const preResolvedMap = new Map(
+    preResolved
+      .filter((p) => p.resolvedAction)
+      .map((p) => [p.field.selector, p.resolvedAction!])
+  )
+
+  const prefilledLines: string[] = []
+  const unfilledLines: string[] = []
+
+  for (const field of snapshot.fields) {
+    if (hasMeaningfulValue(field)) continue
+    const ruleAction = ruleMap.get(field.selector)
+    const preAction = preResolvedMap.get(field.selector)
+    const filledValue = preAction?.value ?? ruleAction?.value
+
+    const line = formatFieldForPrompt(field, filledValue ?? undefined)
+    if (filledValue) {
+      prefilledLines.push(line)
+    } else {
+      unfilledLines.push(line)
+    }
+  }
+
+  const navText = snapshot.navigationTargets
+    .map((n) => `${n.selector} | ${n.text}`)
+    .join("\n")
+
+  return `PROFILE: ${JSON.stringify(context.profile)}
+RESUME HIGHLIGHTS: ${context.resume.parsedHighlights.slice(0, 5).join("; ")}
+
+PRE-FILLED (review for correctness — fix any that are wrong for the field type):
+${prefilledLines.length ? prefilledLines.join("\n") : "(none)"}
+
+UNFILLED (provide values using profile/resume context):
+${unfilledLines.length ? unfilledLines.join("\n") : "(none)"}
+
+NAV (for clickNext only): ${navText || "none"}
+
+Output JSON array of actions for ALL fields (pre-filled corrections + unfilled values):`
+}
+
+const buildRetryPrompt = (
+  snapshot: FormSnapshot,
+  context: AgentContext
+): string => {
+  const fields = snapshot.fields
+    .filter((f) => !hasMeaningfulValue(f))
+    .map((f) => {
+      const label = f.label || f.name || "?"
+      if (f.kind === "select") {
+        const opts = f.options.filter((o) => o.value).slice(0, 20).map((o) => o.label || o.value).join(", ")
+        return `${f.selector} | ${label} | DROPDOWN [${opts}]`
+      }
+      return `${f.selector} | ${label} | ${f.kind}`
+    })
+    .join("\n")
+
+  return `Fill these form fields. Output ONLY a JSON array.
+Each item: {"selector":"...","type":"setValue"|"setSelect","fieldLabel":"...","value":"...","reasoning":"...","confidence":0.8}
+
+PROFILE: ${JSON.stringify(context.profile)}
+FIELDS:
+${fields}
+
+JSON array:`
+}
+
+const mergeLlmActions = (
+  parsed: z.infer<typeof llmActionSchema>[],
+  snapshot: FormSnapshot,
+  allowedSelectors: Set<string>,
+  mergedActions: Map<string, AgentAction>
+): number => {
+  let count = 0
+  for (const llmAction of parsed) {
+    if (!allowedSelectors.has(llmAction.selector)) continue
+    const field = snapshot.fields.find((f) => f.selector === llmAction.selector)
+    if (!field) continue
+
+    let finalAction: AgentAction | null
+    if (field.kind === "select") {
+      const resolved = pickOptionValue(field, llmAction.value)
+      if (!resolved) continue
+      finalAction = {
+        id: crypto.randomUUID(),
+        ...llmAction,
+        value: resolved,
+        reasoning: llmAction.reasoning || "LLM refinement"
+      }
+    } else {
+      finalAction = {
+        id: crypto.randomUUID(),
+        ...llmAction,
+        reasoning: llmAction.reasoning || "LLM refinement"
+      }
+    }
+    if (finalAction) {
+      mergedActions.set(finalAction.selector, finalAction)
+      count++
+    }
+  }
+  return count
+}
+
+const appendNavAction = (
+  snapshot: FormSnapshot,
+  mergedActions: Map<string, AgentAction>
+) => {
+  const nextButton = snapshot.navigationTargets[0]
+  if (nextButton) {
+    mergedActions.set(nextButton.selector, {
+      id: crypto.randomUUID(),
+      type: "clickNext",
+      selector: nextButton.selector,
+      fieldLabel: nextButton.text || "Next button",
+      value: "",
+      reasoning: "Detected likely navigation control",
+      confidence: 0.58
+    })
+  }
+}
 
 export const buildActionPlan = async (
   snapshot: FormSnapshot,
@@ -225,45 +600,71 @@ export const buildActionPlan = async (
     ...snapshot.navigationTargets.map((target) => target.selector)
   ])
 
-  const fieldsText = snapshot.fields
-    .map(
-      (f) =>
-        `${f.selector} | ${f.label || f.name || "?"} | ${f.kind}` +
-        (f.options.length ? ` | options: ${f.options.slice(0, 8).map((o) => o.label || o.value).join(", ")}` : "")
-    )
-    .join("\n")
-  const navText = snapshot.navigationTargets.map((n) => `${n.selector} | ${n.text}`).join("\n")
-  const userPrompt = `PROFILE: ${JSON.stringify(context.profile)}
-RESUME HIGHLIGHTS: ${context.resume.parsedHighlights.slice(0, 3).join("; ")}
+  const ruleActions = buildRuleBasedPlan(snapshot, context)
+  const preResolved = preResolveSelectFields(snapshot, context)
 
-FIELDS (use selector exactly):
-${fieldsText}
-
-NAV (for clickNext only): ${navText || "none"}
-
-Output JSON array of actions:`
-
-  try {
-    const raw = await runWebLlmPrompt(systemPrompt, userPrompt)
-    const parsed = llmActionListSchema.parse(JSON.parse(extractLikelyJson(raw)))
-
-    const actions: AgentAction[] = parsed
-      .filter((action) => allowedSelectors.has(action.selector))
-      .map((action) => ({
-        id: crypto.randomUUID(),
-        ...action
-      }))
-      .filter((action) => action.type !== "clickNext" || Boolean(action.selector))
-
-    if (actions.length > 0) {
-      return { source: "webllm", actions: sortActions(actions) }
+  const mergedActions = new Map<string, AgentAction>()
+  for (const action of ruleActions) {
+    mergedActions.set(action.selector, action)
+  }
+  for (const { resolvedAction } of preResolved) {
+    if (resolvedAction) {
+      mergedActions.set(resolvedAction.selector, resolvedAction)
     }
-  } catch {
-    // Rule-based fallback keeps MVP usable if model output is malformed.
   }
 
+  const totalFields = snapshot.fields.filter((f) => !hasMeaningfulValue(f)).length
+
+  // Attempt 1: full hybrid prompt with structured JSON output
+  let llmError = ""
+  try {
+    const userPrompt = buildHybridUserPrompt(snapshot, context, ruleActions, preResolved)
+    const raw = await runWebLlmPrompt(SYSTEM_PROMPT, userPrompt, ACTION_JSON_SCHEMA)
+    const parsed = tryParseActions(raw)
+
+    if (parsed && parsed.length > 0) {
+      const llmCount = mergeLlmActions(parsed, snapshot, allowedSelectors, mergedActions)
+      appendNavAction(snapshot, mergedActions)
+      return {
+        source: "hybrid",
+        actions: sortActions(Array.from(mergedActions.values())),
+        llmDetail: `LLM refined ${llmCount}/${totalFields} fields`
+      }
+    }
+    llmError = `LLM returned unparseable output (${raw.length} chars)`
+  } catch (error: unknown) {
+    llmError = error instanceof Error ? error.message : "LLM call failed"
+  }
+
+  // Attempt 2: retry with simpler prompt, still using structured output
+  try {
+    const retryPrompt = buildRetryPrompt(snapshot, context)
+    const raw = await runWebLlmPrompt(
+      "You fill form fields. Respond with a JSON object containing an actions array.",
+      retryPrompt,
+      ACTION_JSON_SCHEMA
+    )
+    const parsed = tryParseActions(raw)
+
+    if (parsed && parsed.length > 0) {
+      const llmCount = mergeLlmActions(parsed, snapshot, allowedSelectors, mergedActions)
+      appendNavAction(snapshot, mergedActions)
+      return {
+        source: "hybrid",
+        actions: sortActions(Array.from(mergedActions.values())),
+        llmDetail: `LLM retry succeeded: refined ${llmCount}/${totalFields} fields (first attempt: ${llmError})`
+      }
+    }
+    llmError += "; retry also returned unparseable output"
+  } catch (retryError: unknown) {
+    llmError += `; retry failed: ${retryError instanceof Error ? retryError.message : "unknown"}`
+  }
+
+  // Fallback: rule-based + pre-resolved only
+  appendNavAction(snapshot, mergedActions)
   return {
     source: "rule-based",
-    actions: sortActions(buildRuleBasedPlan(snapshot, context))
+    actions: sortActions(Array.from(mergedActions.values())),
+    llmDetail: `Fell back to rule-based: ${llmError}`
   }
 }
