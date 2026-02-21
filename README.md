@@ -13,7 +13,7 @@ Chrome extension MVP for guided job-form automation using local-only WebLLM (Web
 
 ## Stack
 
-- Plasmo + React side panel
+- Plasmo + React floating menu (injected on whitelisted pages)
 - Manifest V3 Chrome extension
 - `@mlc-ai/web-llm` local inference on WebGPU
 
@@ -46,7 +46,7 @@ npm run build
 ### Demo Script
 
 1. Open a known job-application page on primary site.
-2. Open the extension side panel.
+2. Click the floating FAB (bottom-right) to open the menu.
 3. Click **Prewarm Local WebLLM** before starting the timed flow.
 4. Confirm whitelist includes the target domain.
 5. Save or verify profile + resume text.

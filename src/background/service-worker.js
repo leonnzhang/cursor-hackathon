@@ -1,8 +1,6 @@
 // Agentic Autofill - Background Service Worker
 
-chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(console.error);
-
-// Forward messages between content script and side panel
+// Forward messages for legacy fill-form / enable-selection (if content/content.js used)
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "enable-selection" && sender.url?.startsWith("chrome-extension://")) {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {

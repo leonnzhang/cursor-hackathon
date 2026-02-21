@@ -1,13 +1,5 @@
 import { getHostnameFromUrl, isWhitelistedHost } from "~src/config/whitelist"
-import { extractFormSnapshot } from "~src/lib/form-extractor"
 import type { AgentAction } from "~src/types/agent"
-import type { AgentRequest, AgentResponse } from "~src/types/messages"
-
-declare global {
-  interface Window {
-    __agenticAutofillInitialized?: boolean
-  }
-}
 
 const isVisible = (element: HTMLElement) => {
   const rect = element.getBoundingClientRect()
@@ -18,13 +10,6 @@ const isVisible = (element: HTMLElement) => {
     style.display !== "none" &&
     style.visibility !== "hidden"
   )
-}
-
-const ensureWhitelisted = (whitelist: string[]) => {
-  const hostname = getHostnameFromUrl(window.location.href)
-  if (!isWhitelistedHost(hostname, whitelist)) {
-    throw new Error(`Domain is not in whitelist: ${hostname}`)
-  }
 }
 
 const queryElement = (selector: string) => {
@@ -49,7 +34,9 @@ const dispatchInputEvents = (element: HTMLElement) => {
 const findRadioOptionByText = (name: string, targetValue: string) => {
   const safeName = name.replace(/"/g, '\\"')
   const radios = Array.from(
-    document.querySelectorAll<HTMLInputElement>(`input[type="radio"][name="${safeName}"]`)
+    document.querySelectorAll<HTMLInputElement>(
+      `input[type="radio"][name="${safeName}"]`
+    )
   )
   const normalizedTarget = targetValue.trim().toLowerCase()
   return radios.find((radio) => {
@@ -63,7 +50,7 @@ const findRadioOptionByText = (name: string, targetValue: string) => {
   })
 }
 
-const executeAction = (action: AgentAction) => {
+export const executeAction = (action: AgentAction): string => {
   const element = queryElement(action.selector)
 
   switch (action.type) {
@@ -128,46 +115,9 @@ const executeAction = (action: AgentAction) => {
   }
 }
 
-const handleMessage = async (message: AgentRequest): Promise<AgentResponse> => {
-  switch (message.type) {
-    case "agent.ping":
-      return { ok: true, type: "agent.ping", detail: "form-agent-ready" }
-    case "agent.extractForm":
-      ensureWhitelisted(message.whitelist)
-      return {
-        ok: true,
-        type: "agent.extractForm",
-        snapshot: extractFormSnapshot()
-      }
-    case "agent.executeAction":
-      ensureWhitelisted(message.whitelist)
-      return {
-        ok: true,
-        type: "agent.executeAction",
-        detail: executeAction(message.action)
-      }
-    default:
-      return { ok: false, error: "Unknown message type" }
+export const ensureWhitelisted = (whitelist: string[], hostname?: string) => {
+  const host = hostname ?? getHostnameFromUrl(window.location.href)
+  if (!isWhitelistedHost(host, whitelist)) {
+    throw new Error(`Domain is not in whitelist: ${host}`)
   }
 }
-
-export const bootFormAgent = () => {
-  if (window.__agenticAutofillInitialized) {
-    return
-  }
-  window.__agenticAutofillInitialized = true
-
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    handleMessage(message as AgentRequest)
-      .then((response) => sendResponse(response))
-      .catch((error: unknown) =>
-        sendResponse({
-          ok: false,
-          error: error instanceof Error ? error.message : "Unknown content error"
-        } satisfies AgentResponse)
-      )
-    return true
-  })
-}
-
-bootFormAgent()

@@ -22,17 +22,13 @@
       "storage",
       "activeTab",
       "tabs",
-      "scripting",
-      "sidePanel"
+      "scripting"
     ],
     "host_permissions": [
       "<all_urls>"
     ],
     "action": {
       "default_title": "Agentic Autofill MVP"
-    },
-    "side_panel": {
-      "default_path": "sidepanel.html"
     },
     "content_security_policy": {
       "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; style-src 'self'; default-src 'self' data:; connect-src 'self' data: http://127.0.0.1:7444 https://huggingface.co https://cdn-lfs.huggingface.co https://cdn-lfs-us-1.huggingface.co https://raw.githubusercontent.com https://cdn-lfs-us-1.hf.co https://cas-bridge.xethub.hf.co"
