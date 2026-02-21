@@ -3,15 +3,6 @@ import { z } from "zod"
 import type { AgentContext, AgentAction, ExtractedField, FormSnapshot, PlanResult } from "~src/types/agent"
 import { runWebLlmPrompt } from "~src/lib/webllm"
 
-// #region agent log
-const _dbg = (msg: string, data: Record<string, unknown>, hyp: string) =>
-  fetch("http://127.0.0.1:7444/ingest/5febb908-5112-4db3-9ca9-07c57ed4c177", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "030d0c" },
-    body: JSON.stringify({ sessionId: "030d0c", location: "action-engine.ts", message: msg, data, hypothesisId: hyp, timestamp: Date.now() })
-  }).catch(() => {})
-// #endregion
-
 const llmActionSchema = z.object({
   selector: z.string().min(1),
   type: z.enum(["setValue", "setSelect", "setCheckbox", "setRadio", "clickNext"]),
@@ -216,23 +207,14 @@ const buildRuleBasedPlan = (snapshot: FormSnapshot, context: AgentContext): Agen
   return fieldActions
 }
 
-const systemPrompt = `You are a browser form automation planner.
-You must output STRICT JSON only.
-Return a JSON array where each item is:
-{
-  "selector": string,
-  "type": "setValue" | "setSelect" | "setCheckbox" | "setRadio" | "clickNext",
-  "fieldLabel": string,
-  "value": string,
-  "reasoning": string,
-  "confidence": number
-}
-Rules:
-- Only return selectors that already exist in provided fields/navigation.
-- Keep confidence in [0,1].
-- Skip risky or ambiguous actions.
-- Output form-fill actions FIRST (setValue, setSelect, setCheckbox, setRadio), then clickNext LAST.
-- Never include Apply or Submit buttons—they are final submission. Only include Next/Continue/Review for multi-step flows.`
+const systemPrompt = `You plan form-fill actions. Output ONLY a JSON array of ACTION objects. No other text.
+
+Each action: {"selector":"...","type":"setValue"|"setSelect"|"setCheckbox"|"setRadio"|"clickNext","fieldLabel":"...","value":"...","reasoning":"...","confidence":0.8}
+
+Example for one field:
+[{"selector":"#first_name","type":"setValue","fieldLabel":"First Name","value":"John Doe","reasoning":"From profile fullName","confidence":0.9}]
+
+Rules: Copy selectors exactly from input. Use profile/resume for value. setValue/setSelect/setCheckbox/setRadio first; clickNext last. No Apply/Submit.`
 
 export const buildActionPlan = async (
   snapshot: FormSnapshot,
@@ -243,75 +225,28 @@ export const buildActionPlan = async (
     ...snapshot.navigationTargets.map((target) => target.selector)
   ])
 
-  const userPrompt = JSON.stringify(
-    {
-      profile: context.profile,
-      resumeHighlights: context.resume.parsedHighlights,
-      fields: snapshot.fields.map((field) => ({
-        selector: field.selector,
-        kind: field.kind,
-        label: field.label,
-        name: field.name,
-        placeholder: field.placeholder,
-        required: field.required,
-        options: field.options
-      })),
-      navigationTargets: snapshot.navigationTargets
-    },
-    null,
-    2
-  )
+  const fieldsText = snapshot.fields
+    .map(
+      (f) =>
+        `${f.selector} | ${f.label || f.name || "?"} | ${f.kind}` +
+        (f.options.length ? ` | options: ${f.options.slice(0, 8).map((o) => o.label || o.value).join(", ")}` : "")
+    )
+    .join("\n")
+  const navText = snapshot.navigationTargets.map((n) => `${n.selector} | ${n.text}`).join("\n")
+  const userPrompt = `PROFILE: ${JSON.stringify(context.profile)}
+RESUME HIGHLIGHTS: ${context.resume.parsedHighlights.slice(0, 3).join("; ")}
 
-  // #region agent log
-  _dbg("buildActionPlan entry", {
-    fieldCount: snapshot.fields.length,
-    userPromptLength: userPrompt.length,
-    allowedSelectorCount: allowedSelectors.size
-  }, "H0_context")
-  // #endregion
+FIELDS (use selector exactly):
+${fieldsText}
+
+NAV (for clickNext only): ${navText || "none"}
+
+Output JSON array of actions:`
 
   try {
     const raw = await runWebLlmPrompt(systemPrompt, userPrompt)
+    const parsed = llmActionListSchema.parse(JSON.parse(extractLikelyJson(raw)))
 
-    // #region agent log
-    const extracted = extractLikelyJson(raw)
-    _dbg("after runWebLlmPrompt", {
-      rawLength: raw.length,
-      extractedLength: extracted.length,
-      rawEndsWithBracket: raw.trimEnd().endsWith("]"),
-      extractedEndsWithBracket: extracted.trimEnd().endsWith("]"),
-      rawLast150: raw.slice(-150),
-      extractedLast150: extracted.slice(-150)
-    }, "H1_truncation")
-    // #endregion
-
-    let parsed: z.infer<typeof llmActionListSchema>
-    try {
-      parsed = JSON.parse(extracted)
-    } catch (err) {
-      // #region agent log
-      _dbg("JSON.parse failed", {
-        error: err instanceof Error ? err.message : String(err),
-        extractedSample: extracted.slice(0, 500)
-      }, "H2_json_parse")
-      // #endregion
-      throw err
-    }
-
-    try {
-      parsed = llmActionListSchema.parse(parsed)
-    } catch (err) {
-      // #region agent log
-      _dbg("schema parse failed", {
-        error: err instanceof Error ? err.message : String(err),
-        parsedSample: JSON.stringify(parsed).slice(0, 500)
-      }, "H3_schema")
-      // #endregion
-      throw err
-    }
-
-    const beforeFilter = parsed.length
-    const filteredBySelector = parsed.filter((a) => !allowedSelectors.has(a.selector))
     const actions: AgentAction[] = parsed
       .filter((action) => allowedSelectors.has(action.selector))
       .map((action) => ({
@@ -320,29 +255,10 @@ export const buildActionPlan = async (
       }))
       .filter((action) => action.type !== "clickNext" || Boolean(action.selector))
 
-    // #region agent log
-    _dbg("after filter", {
-      parsedCount: beforeFilter,
-      actionsCount: actions.length,
-      filteredBySelectorCount: filteredBySelector.length,
-      filteredSelectors: filteredBySelector.slice(0, 10).map((a) => a.selector)
-    }, "H4_H5_selector_filter")
-    // #endregion
-
     if (actions.length > 0) {
       return { source: "webllm", actions: sortActions(actions) }
     }
-
-    // #region agent log
-    _dbg("fallback: actions.length===0 after filter", { parsedCount: beforeFilter }, "H5_empty")
-    // #endregion
-  } catch (err) {
-    // #region agent log
-    _dbg("catch fallback", {
-      error: err instanceof Error ? err.message : String(err),
-      name: err instanceof Error ? err.name : ""
-    }, "H0_catch")
-    // #endregion
+  } catch {
     // Rule-based fallback keeps MVP usable if model output is malformed.
   }
 

@@ -148,7 +148,7 @@ export const runWebLlmPrompt = async (systemPrompt: string, userPrompt: string) 
       { role: "user", content: userPrompt }
     ],
     temperature: 0.1,
-    max_tokens: 700
+    max_tokens: 1500
   })
 
   const content = completion.choices?.[0]?.message?.content
