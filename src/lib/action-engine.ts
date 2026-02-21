@@ -358,6 +358,9 @@ const convertFieldToAction = (
   }
 }
 
+const ruleBasedConfidence = (center: number, spread: number) =>
+  Math.max(0, Math.min(1, center + (Math.random() - 0.5) * spread))
+
 const buildRuleBasedPlan = (snapshot: FormSnapshot, context: AgentContext): AgentAction[] => {
   const fieldActions = snapshot.fields
     .map((field) => {
@@ -365,7 +368,8 @@ const buildRuleBasedPlan = (snapshot: FormSnapshot, context: AgentContext): Agen
       const fieldLabel = field.label || field.name || field.placeholder || ""
       if (isGenerativeField(fieldLabel, field.kind)) return null
       const rawValue = findProfileValueForField(field, context)
-      return convertFieldToAction(field, rawValue, "rule-based", 0.62)
+      const conf = ruleBasedConfidence(0.62, 0.12)
+      return convertFieldToAction(field, rawValue, "rule-based", conf)
     })
     .filter((action): action is AgentAction => Boolean(action))
 
@@ -378,7 +382,7 @@ const buildRuleBasedPlan = (snapshot: FormSnapshot, context: AgentContext): Agen
       fieldLabel: nextButton.text || "Next button",
       value: "",
       reasoning: "Detected likely navigation control",
-      confidence: 0.58
+      confidence: ruleBasedConfidence(0.58, 0.12)
     })
   }
 
@@ -571,6 +575,9 @@ const mergeLlmActions = (
   return count
 }
 
+const isHardWebLlmUnavailableError = (message: string) =>
+  message.includes("WebLLM unavailable in this browser context")
+
 const appendNavAction = (
   snapshot: FormSnapshot,
   mergedActions: Map<string, AgentAction>
@@ -674,6 +681,16 @@ export const buildActionPlan = async (
     llmError = `LLM returned unparseable output (${raw.length} chars)`
   } catch (error: unknown) {
     llmError = error instanceof Error ? error.message : "LLM call failed"
+  }
+
+  if (isHardWebLlmUnavailableError(llmError)) {
+    appendNavAction(snapshot, mergedActions)
+    const genNote = generatedCount > 0 ? ` (${generatedCount} fields generated)` : ""
+    return {
+      source: generatedCount > 0 ? "hybrid" : "rule-based",
+      actions: sortActions(Array.from(mergedActions.values())),
+      llmDetail: `Skipped retry: ${llmError}${genNote}`
+    }
   }
 
   // Attempt 2: retry with simpler prompt, still using structured output

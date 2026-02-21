@@ -1,4 +1,4 @@
-// Agentic Autofill - Background Service Worker
+// FormFlow - Background Service Worker
 
 // Forward messages for legacy fill-form / enable-selection (if content/content.js used)
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

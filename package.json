@@ -1,7 +1,7 @@
 {
-  "name": "agentic-autofill",
+  "name": "formflow",
   "version": "1.0.0",
-  "description": "Agentic autofill/action clicker extension MVP",
+  "description": "Form automation with local AI",
   "scripts": {
     "dev": "PARCEL_WORKERS=0 plasmo dev",
     "build": "PARCEL_WORKERS=0 plasmo build",
@@ -12,11 +12,11 @@
     "chrome-extension",
     "plasmo",
     "webllm",
-    "autofill"
+    "formflow"
   ],
   "author": "",
   "license": "ISC",
-  "displayName": "Agentic Autofill MVP",
+  "displayName": "FormFlow",
   "manifest": {
     "permissions": [
       "storage",
@@ -28,7 +28,7 @@
       "<all_urls>"
     ],
     "action": {
-      "default_title": "Agentic Autofill MVP"
+      "default_title": "FormFlow"
     },
     "content_security_policy": {
       "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; style-src 'self'; default-src 'self' data:; connect-src 'self' data: http://127.0.0.1:7444 https://huggingface.co https://cdn-lfs.huggingface.co https://cdn-lfs-us-1.huggingface.co https://raw.githubusercontent.com https://cdn-lfs-us-1.hf.co https://cas-bridge.xethub.hf.co"

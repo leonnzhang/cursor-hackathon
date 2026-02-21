@@ -41,6 +41,7 @@ let engine: MLCEngine | null = null
 let pendingLoad: Promise<MLCEngine> | null = null
 let currentModelId = ""
 let userModelOverride: string | null = null
+let hardFailureReason: string | null = null
 
 let status: LlmStatus = {
   state: "idle",
@@ -53,6 +54,7 @@ export const setPreferredModel = (modelId: string) => {
   if (engine && currentModelId !== modelId) {
     engine = null
     pendingLoad = null
+    hardFailureReason = null
     status = { state: "idle", detail: "Model changed, needs reload", progress: 0, modelId: "" }
   }
   userModelOverride = modelId
@@ -101,35 +103,12 @@ const updateStatusFromProgress = (modelId: string, report: InitProgressReport) =
   }
 }
 
-// #region agent log
-const _dbgLog = (msg: string, data: Record<string, unknown>, hypId: string) => {
-  fetch('http://127.0.0.1:7444/ingest/5febb908-5112-4db3-9ca9-07c57ed4c177',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a40af4'},body:JSON.stringify({sessionId:'a40af4',location:'webllm.ts:warmupWebLlm',message:msg,data,hypothesisId:hypId,timestamp:Date.now()})}).catch(()=>{});
-};
-// #endregion
-
 export const warmupWebLlm = async (
   onProgress?: (report: InitProgressReport) => void
 ) => {
-  // #region agent log
-  _dbgLog("warmupWebLlm entry", {
-    hasGpu: "gpu" in navigator,
-    location: typeof location !== "undefined" ? location?.href : "no location",
-    isExtensionContext: typeof chrome !== "undefined" && !!chrome?.runtime?.id
-  }, "H1");
-  try {
-    const testCanvas = typeof OffscreenCanvas !== "undefined"
-      ? new OffscreenCanvas(1, 1)
-      : document.createElement("canvas");
-    const ctx = testCanvas.getContext?.("webgpu");
-    _dbgLog("canvas getContext(webgpu) test", {
-      canvasType: typeof OffscreenCanvas !== "undefined" ? "OffscreenCanvas" : "HTMLCanvasElement",
-      ctxIsNull: ctx === null,
-      ctxType: ctx ? typeof ctx : "null"
-    }, "H1");
-  } catch (e) {
-    _dbgLog("canvas test threw", { err: String(e) }, "H1");
+  if (hardFailureReason) {
+    throw new Error(hardFailureReason)
   }
-  // #endregion
 
   if (!("gpu" in navigator)) {
     status = {
@@ -158,10 +137,6 @@ export const warmupWebLlm = async (
     modelId
   }
 
-  // #region agent log
-  _dbgLog("calling CreateMLCEngine", { modelId }, "H3");
-  // #endregion
-
   pendingLoad = CreateMLCEngine(modelId, {
     initProgressCallback: (report) => {
       updateStatusFromProgress(modelId, report)
@@ -180,19 +155,17 @@ export const warmupWebLlm = async (
       return loadedEngine
     })
     .catch((error: unknown) => {
-      // #region agent log
-      _dbgLog("CreateMLCEngine failed", {
-        errMsg: error instanceof Error ? error.message : String(error),
-        errName: error instanceof Error ? error.name : "unknown",
-        stack: error instanceof Error ? error.stack : undefined,
-        location: typeof location !== "undefined" ? location?.href : "no location"
-      }, "H3");
-      // #endregion
+      if (error instanceof Error && error.name === "CompileError") {
+        hardFailureReason =
+          "WebLLM unavailable in this browser context (WebAssembly compile failed). Falling back to rule-based planning."
+      }
+
       pendingLoad = null
       status = {
         state: "error",
         detail:
-          error instanceof Error ? error.message : "Failed to load local model",
+          hardFailureReason ||
+          (error instanceof Error ? error.message : "Failed to load local model"),
         progress: 0,
         modelId
       }

@@ -1,6 +1,6 @@
-# Agentic Autofill MVP
+# FormFlow
 
-Chrome extension MVP for guided job-form automation using local-only WebLLM (WebGPU), with user-confirmed step-by-step execution.
+Chrome extension for guided form automation using local-only WebLLM (WebGPU), with user-confirmed step-by-step execution.
 
 ## What This MVP Does
 

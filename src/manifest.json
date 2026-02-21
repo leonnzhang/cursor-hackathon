@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Agentic Autofill",
+  "name": "FormFlow",
   "version": "1.0.0",
   "description": "Human-guided form automation with local AI",
   "minimum_chrome_version": "114",
@@ -14,7 +14,7 @@
     "extension_pages": "style-src 'self'; script-src 'self' 'wasm-unsafe-eval'; default-src 'self' data:; connect-src 'self' data: http://127.0.0.1:7444 https://huggingface.co https://cdn-lfs.huggingface.co https://cdn-lfs-us-1.huggingface.co https://raw.githubusercontent.com https://cdn-lfs-us-1.hf.co https://cas-bridge.xethub.hf.co"
   },
   "action": {
-    "default_title": "Agentic Autofill",
+    "default_title": "FormFlow",
     "default_icon": {
       "16": "icons/icon-16.png",
       "32": "icons/icon-32.png"

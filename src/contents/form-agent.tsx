@@ -46,7 +46,7 @@ import type { AgentRequest, AgentResponse } from "~src/types/messages"
 
 declare global {
   interface Window {
-    __agenticAutofillInitialized?: boolean
+    __formflowInitialized?: boolean
   }
 }
 
@@ -74,8 +74,8 @@ const handleMessage = async (message: AgentRequest): Promise<AgentResponse> => {
 }
 
 const bootFormAgent = () => {
-  if (window.__agenticAutofillInitialized) return
-  window.__agenticAutofillInitialized = true
+  if (window.__formflowInitialized) return
+  window.__formflowInitialized = true
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     handleMessage(message as AgentRequest)
       .then((response) => sendResponse(response))
@@ -379,16 +379,27 @@ const FloatingMenu = () => {
   }
 
   const handleWarmupModel = async () => {
-    await withBusyState(async () => {
-      setModelStatusMessage("loading: starting")
-      await warmupWebLlm((report) => {
-        const percent = Math.round(report.progress * 100)
-        setModelStatusMessage(`loading: ${report.text} (${percent}%)`)
+    try {
+      await withBusyState(async () => {
+        setModelStatusMessage("loading: starting")
+        await warmupWebLlm((report) => {
+          const percent = Math.round(report.progress * 100)
+          setModelStatusMessage(`loading: ${report.text} (${percent}%)`)
+        })
+        const modelStatus = getWebLlmStatus()
+        setModelStatusMessage(`${modelStatus.state}: ${modelStatus.detail}`)
+        setStatusMessage("WebLLM ready.")
       })
-      const modelStatus = getWebLlmStatus()
-      setModelStatusMessage(`${modelStatus.state}: ${modelStatus.detail}`)
-      setStatusMessage("WebLLM ready.")
-    })
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Model warmup failed"
+      if (message.includes("WebLLM unavailable in this browser context")) {
+        setModelStatusMessage(`fallback: ${message}`)
+        setStatusMessage("WebLLM unavailable here. Using rule-based planning.")
+        return
+      }
+      setModelStatusMessage(`error: ${message}`)
+      setStatusMessage(message)
+    }
   }
 
   const handlePlanActions = async (snapshotOverride?: FormSnapshot) => {
@@ -406,8 +417,13 @@ const FloatingMenu = () => {
           })
           const modelStatus = getWebLlmStatus()
           setModelStatusMessage(`${modelStatus.state}: ${modelStatus.detail}`)
-        } catch {
-          setModelStatusMessage("error: using rule-based fallback")
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : "using rule-based fallback"
+          if (message.includes("WebLLM unavailable in this browser context")) {
+            setModelStatusMessage(`fallback: ${message}`)
+          } else {
+            setModelStatusMessage(`error: ${message}`)
+          }
         }
       }
 
@@ -581,8 +597,8 @@ const FloatingMenu = () => {
         <div className="aa-panel">
           <div className="aa-panel-header">
             <div>
-              <p className="aa-title">Agentic Autofill</p>
-              <p className="aa-subtitle">Autonomous form assistant</p>
+              <p className="aa-title">FormFlow</p>
+              <p className="aa-subtitle">Agentic form assistant</p>
             </div>
             <span className={`aa-badge aa-badge-${statusTone}`}>
               {isBusy ? "Busy" : "Ready"}
@@ -789,32 +805,6 @@ const FloatingMenu = () => {
             {activeTab === "run" && (
               <div className="aa-stack">
                 <section className="aa-card">
-                  <div className="aa-section-title">Run flow</div>
-                  <div className="aa-stepper">
-                    <button
-                      className={`aa-step ${snapshot ? "is-done" : ""}`}
-                      onClick={handleExtractForm}
-                      disabled={isBusy}>
-                      <span className="aa-step-index">{snapshot ? "ok" : "1"}</span>
-                      <span>Capture</span>
-                    </button>
-                    <div className={`aa-step-line ${snapshot ? "is-active" : ""}`} />
-                    <button
-                      className={`aa-step ${actions.length > 0 ? "is-done" : ""}`}
-                      onClick={handlePlanActions}
-                      disabled={isBusy || !snapshot}>
-                      <span className="aa-step-index">{actions.length > 0 ? "ok" : "2"}</span>
-                      <span>Plan</span>
-                    </button>
-                  </div>
-
-                  <p className={`aa-meta aa-planner planner-${planningSource}`}>
-                    Planner: {planningSource}
-                  </p>
-                  <p className="aa-meta">Queue: {getQueueLabel(actions, currentActionIndex)}</p>
-                </section>
-
-                <section className="aa-card">
                   <div className="aa-section-title">Action review</div>
                   {currentAction ? (
                     <div className="aa-action-card">
@@ -872,13 +862,13 @@ const FloatingMenu = () => {
                         />
                       </label>
 
-                      <button
-                        className="aa-btn aa-btn-approve"
-                        onClick={handleApproveStep}
-                        disabled={isBusy || !currentAction || isStopped}>
-                        Approve step
-                      </button>
-                      <div className="aa-row aa-row-tight">
+                      <div className="aa-approve-row">
+                        <button
+                          className="aa-btn aa-btn-approve"
+                          onClick={handleApproveStep}
+                          disabled={isBusy || !currentAction || isStopped}>
+                          Approve & next
+                        </button>
                         <button
                           className="aa-btn aa-btn-secondary"
                           onClick={handleSkipStep}
@@ -886,29 +876,59 @@ const FloatingMenu = () => {
                           Skip
                         </button>
                         <button
-                          className="aa-btn aa-btn-danger"
+                          className="aa-btn aa-btn-danger aa-btn-sm"
                           onClick={handleStop}
-                          disabled={!currentAction}>
+                          disabled={!currentAction}
+                          title="Stop execution">
                           Stop
                         </button>
                       </div>
-                      <button
-                        className="aa-link"
-                        onClick={handleApproveAllAboveThreshold}
-                        disabled={isBusy || actions.length === 0 || isStopped}>
-                        Approve all above{" "}
-                        {agency.autoExecuteThreshold > 0
-                          ? (agency.autoExecuteThreshold * 100).toFixed(0)
-                          : 90}
-                        %
-                      </button>
-                      <button className="aa-link aa-link-muted" onClick={handleResetQueue}>
-                        Reset queue
-                      </button>
+                      <div className="aa-approve-links">
+                        <button
+                          className="aa-link"
+                          onClick={handleApproveAllAboveThreshold}
+                          disabled={isBusy || actions.length === 0 || isStopped}>
+                          Approve all above{" "}
+                          {agency.autoExecuteThreshold > 0
+                            ? (agency.autoExecuteThreshold * 100).toFixed(0)
+                            : 90}
+                          %
+                        </button>
+                        <span className="aa-link-sep">·</span>
+                        <button className="aa-link aa-link-muted" onClick={handleResetQueue}>
+                          Reset queue
+                        </button>
+                      </div>
                     </div>
                   ) : (
-                    <p className="aa-empty">Capture and plan to begin approvals.</p>
+                    <p className="aa-empty">Capture and plan below to begin approvals.</p>
                   )}
+                </section>
+
+                <section className="aa-card">
+                  <div className="aa-section-title">Run flow</div>
+                  <div className="aa-stepper">
+                    <button
+                      className={`aa-step ${snapshot ? "is-done" : ""}`}
+                      onClick={handleExtractForm}
+                      disabled={isBusy}>
+                      <span className="aa-step-index">{snapshot ? "ok" : "1"}</span>
+                      <span>Capture</span>
+                    </button>
+                    <div className={`aa-step-line ${snapshot ? "is-active" : ""}`} />
+                    <button
+                      className={`aa-step ${actions.length > 0 ? "is-done" : ""}`}
+                      onClick={handlePlanActions}
+                      disabled={isBusy || !snapshot}>
+                      <span className="aa-step-index">{actions.length > 0 ? "ok" : "2"}</span>
+                      <span>Plan</span>
+                    </button>
+                  </div>
+
+                  <p className={`aa-meta aa-planner planner-${planningSource}`}>
+                    Planner: {planningSource}
+                  </p>
+                  <p className="aa-meta">Queue: {getQueueLabel(actions, currentActionIndex)}</p>
                 </section>
               </div>
             )}
@@ -1255,6 +1275,23 @@ export const getStyle = () => {
 
     .aa-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
     .aa-row-tight { margin-top: 6px; }
+    .aa-approve-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-top: 10px;
+      flex-wrap: wrap;
+    }
+    .aa-approve-row .aa-btn-approve { flex: 1; min-width: 100px; }
+    .aa-approve-links {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 8px;
+      flex-wrap: wrap;
+    }
+    .aa-link-sep { color: #cbd5e1; font-size: 10px; }
+    .aa-btn-sm { padding: 5px 10px; font-size: 10px; }
 
     .aa-input, .aa-textarea, .aa-file {
       width: 100%;
