@@ -10,6 +10,7 @@ type LlmStatus =
   | { state: "idle"; detail: string; progress: number; modelId: string }
   | { state: "loading"; detail: string; progress: number; modelId: string }
   | { state: "ready"; detail: string; progress: number; modelId: string }
+  | { state: "rule-based"; detail: string; progress: number; modelId: string }
   | { state: "error"; detail: string; progress: number; modelId: string }
 
 export interface CuratedModel {
@@ -155,21 +156,26 @@ export const warmupWebLlm = async (
       return loadedEngine
     })
     .catch((error: unknown) => {
-      if (error instanceof Error && error.name === "CompileError") {
-        hardFailureReason =
-          "WebLLM unavailable in this browser context (WebAssembly compile failed). Falling back to rule-based planning."
+      const msg = error instanceof Error ? error.message : ""
+      const isWebAssemblyFailure =
+        (error instanceof Error && error.name === "CompileError") ||
+        /instantiate|webassembly/i.test(msg)
+      if (isWebAssemblyFailure) {
+        hardFailureReason = "Using rule-based planning."
       }
 
       pendingLoad = null
       status = {
-        state: "error",
+        state: isWebAssemblyFailure ? "rule-based" : "error",
         detail:
           hardFailureReason ||
           (error instanceof Error ? error.message : "Failed to load local model"),
         progress: 0,
         modelId
       }
-      throw error
+      throw isWebAssemblyFailure
+        ? new Error(hardFailureReason!)
+        : error
     })
 
   return pendingLoad

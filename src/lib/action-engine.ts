@@ -587,7 +587,7 @@ const mergeLlmActions = (
 }
 
 const isHardWebLlmUnavailableError = (message: string) =>
-  message.includes("WebLLM unavailable in this browser context")
+  message.includes("WebLLM unavailable") || message.includes("Using rule-based planning")
 
 const appendNavAction = (
   snapshot: FormSnapshot,

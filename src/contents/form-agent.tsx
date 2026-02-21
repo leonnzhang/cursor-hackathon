@@ -392,9 +392,9 @@ const FloatingMenu = () => {
       })
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Model warmup failed"
-      if (message.includes("WebLLM unavailable in this browser context")) {
-        setModelStatusMessage(`fallback: ${message}`)
-        setStatusMessage("WebLLM unavailable here. Using rule-based planning.")
+      if (message.includes("WebLLM unavailable") || message.includes("Using rule-based planning")) {
+        setModelStatusMessage("Rule-based planning")
+        setStatusMessage("Using rule-based planning.")
         return
       }
       setModelStatusMessage(`error: ${message}`)
@@ -418,9 +418,9 @@ const FloatingMenu = () => {
           const modelStatus = getWebLlmStatus()
           setModelStatusMessage(`${modelStatus.state}: ${modelStatus.detail}`)
         } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : "using rule-based fallback"
-          if (message.includes("WebLLM unavailable in this browser context")) {
-            setModelStatusMessage(`fallback: ${message}`)
+          const message = error instanceof Error ? error.message : "unknown"
+          if (message.includes("WebLLM unavailable") || message.includes("Using rule-based planning")) {
+            setModelStatusMessage("Rule-based planning")
           } else {
             setModelStatusMessage(`error: ${message}`)
           }
@@ -996,7 +996,9 @@ const FloatingMenu = () => {
                             ? "ready"
                             : modelStatusMessage.startsWith("loading")
                               ? "loading"
-                              : "idle"
+                              : /rule-based/i.test(modelStatusMessage)
+                                ? "ready"
+                                : "idle"
                         }`}
                       />
                       Model: {modelStatusMessage}
