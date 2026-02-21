@@ -62,6 +62,33 @@ const findRadioOptionByText = (name: string, targetValue: string) => {
   })
 }
 
+/** Find role="radio" or clickable Yes/No option inside container */
+const findClickableOptionByText = (
+  container: HTMLElement,
+  targetValue: string
+): HTMLElement | null => {
+  const normalizedTarget = targetValue.trim().toLowerCase()
+  const candidates = container.querySelectorAll<HTMLElement>(
+    '[role="radio"], button, [role="button"], [tabindex="0"]'
+  )
+  for (const el of candidates) {
+    const text =
+      el.getAttribute("aria-label") ??
+      el.textContent ??
+      el.getAttribute("data-value") ??
+      ""
+    const normalized = text.trim().toLowerCase()
+    if (
+      normalized === normalizedTarget ||
+      normalized.includes(normalizedTarget) ||
+      normalizedTarget.includes(normalized)
+    ) {
+      return el
+    }
+  }
+  return null
+}
+
 export const executeAction = (action: AgentAction): string => {
   const element = queryElement(action.selector)
 
@@ -108,13 +135,34 @@ export const executeAction = (action: AgentAction): string => {
       return `${nextChecked ? "Checked" : "Unchecked"} ${action.fieldLabel}`
     }
     case "setRadio": {
-      if (!(element instanceof HTMLInputElement) || element.type !== "radio") {
-        throw new Error("setRadio action needs a radio target")
+      const isNativeRadio =
+        element instanceof HTMLInputElement && element.type === "radio"
+
+      if (isNativeRadio) {
+        const target =
+          findRadioOptionByText(element.name, action.value) ?? element
+        target.checked = true
+        dispatchInputEvents(target)
+        return `Set ${action.fieldLabel}`
       }
-      const target = findRadioOptionByText(element.name, action.value) ?? element
-      target.checked = true
-      dispatchInputEvents(target)
-      return `Set ${action.fieldLabel}`
+
+      const container =
+        element.getAttribute("role") === "radio"
+          ? element.closest('[role="radiogroup"]') ?? element
+          : element
+      const clickableOption = findClickableOptionByText(
+        container as HTMLElement,
+        action.value
+      )
+      if (clickableOption) {
+        clickableOption.click()
+        dispatchInputEvents(clickableOption)
+        return `Set ${action.fieldLabel} to ${action.value}`
+      }
+
+      throw new Error(
+        "setRadio action needs a radio, radiogroup, or Yes/No button target"
+      )
     }
     case "clickNext": {
       element.scrollIntoView({ block: "center", inline: "nearest" })

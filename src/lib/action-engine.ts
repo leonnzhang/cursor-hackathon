@@ -361,14 +361,25 @@ const convertFieldToAction = (
 const ruleBasedConfidence = (center: number, spread: number) =>
   Math.max(0, Math.min(1, center + (Math.random() - 0.5) * spread))
 
+/** For Yes/No radio/checkbox with no profile value, use "No" as conservative default so field is planned */
+const inferYesNoFallback = (field: ExtractedField): string | null => {
+  if (field.kind !== "radio" && field.kind !== "checkbox") return null
+  const hasYes = field.options.some((o) => /^yes$/i.test(normalize(o.label)))
+  const hasNo = field.options.some((o) => /^no$/i.test(normalize(o.label)))
+  if (!hasYes || !hasNo) return null
+  return "No"
+}
+
 const buildRuleBasedPlan = (snapshot: FormSnapshot, context: AgentContext): AgentAction[] => {
   const fieldActions = snapshot.fields
     .map((field) => {
       if (hasMeaningfulValue(field)) return null
       const fieldLabel = field.label || field.name || field.placeholder || ""
       if (isGenerativeField(fieldLabel, field.kind)) return null
-      const rawValue = findProfileValueForField(field, context)
-      const conf = ruleBasedConfidence(0.62, 0.12)
+      let rawValue = findProfileValueForField(field, context)
+      if (!rawValue) rawValue = inferYesNoFallback(field) ?? ""
+      const conf = rawValue ? ruleBasedConfidence(0.62, 0.12) : 0
+      if (!rawValue && conf === 0) return null
       return convertFieldToAction(field, rawValue, "rule-based", conf)
     })
     .filter((action): action is AgentAction => Boolean(action))
@@ -417,7 +428,7 @@ RULES:
 1. Copy selectors EXACTLY from input. Never invent selectors.
 2. For DROPDOWN fields: value MUST be one of the listed options. If no option fits, skip the field.
 3. A "city" field needs a city name, NOT a country. A "country" field needs a country, NOT a city.
-4. If the profile lacks data for a field, omit it. Set confidence below 0.5 for uncertain answers.
+4. If the profile lacks data: for Yes/No (RADIO/CHECKBOX) use best guess (e.g. "No") with confidence < 0.5; for TEXT omit it.
 5. PRE-FILLED fields: keep unless clearly wrong. If wrong, include a corrected action.
 6. UNFILLED fields: provide values from profile/resume. Use inference (e.g., derive first name from full name).
 7. Fill actions first; clickNext last. Never click Apply/Submit buttons.`

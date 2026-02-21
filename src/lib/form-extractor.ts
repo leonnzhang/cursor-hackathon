@@ -182,11 +182,133 @@ const shouldSkipField = (element: HTMLElement) => {
   )
 }
 
+/** Extract yes/no fields from custom role="radiogroup" (e.g. Ashby, custom UI) */
+const extractRoleRadioGroups = (): ExtractedField[] => {
+  const groups = document.querySelectorAll<HTMLElement>('[role="radiogroup"]')
+  const fields: ExtractedField[] = []
+  const seenSelectors = new Set<string>()
+
+  groups.forEach((group, groupIndex) => {
+    if (!isVisible(group)) return
+
+    const radios = Array.from(
+      group.querySelectorAll<HTMLElement>('[role="radio"]')
+    )
+    if (radios.length < 2) return
+
+    const options: FieldOption[] = radios.map((radio) => {
+      const label =
+        radio.getAttribute("aria-label") ??
+        normalizeLabel(radio.textContent ?? "")
+      const value =
+        radio.getAttribute("value") ??
+        radio.getAttribute("data-value") ??
+        label
+      return { label: normalizeLabel(label || value), value: String(value || label).trim() }
+    })
+
+    const isYesNo =
+      options.some((o) => /^yes$/i.test(normalizeLabel(o.label))) &&
+      options.some((o) => /^no$/i.test(normalizeLabel(o.label)))
+    const isBinary = options.length === 2
+    if (!isYesNo && !isBinary) return
+
+    const selector = getSelector(group) || buildFallbackSelector(group)
+    if (seenSelectors.has(selector)) return
+    seenSelectors.add(selector)
+
+    const label =
+      group.getAttribute("aria-label") ??
+      (group.getAttribute("aria-labelledby")
+        ? document.getElementById(group.getAttribute("aria-labelledby") ?? "")
+            ?.textContent ?? ""
+        : extractLabel(radios[0]))
+
+    const checkedRadio = radios.find(
+      (r) => r.getAttribute("aria-checked") === "true"
+    )
+    const currentValue = checkedRadio
+      ? normalizeLabel(
+          checkedRadio.getAttribute("aria-label") ??
+            checkedRadio.textContent ??
+            ""
+        )
+      : ""
+
+    fields.push({
+      id: `role-radio-${groupIndex}`,
+      selector,
+      kind: "radio",
+      label: normalizeLabel(label),
+      name: group.getAttribute("aria-label") ?? "",
+      placeholder: "",
+      required: group.getAttribute("aria-required") === "true",
+      options,
+      currentValue
+    })
+  })
+
+  return fields
+}
+
+/** Extract yes/no from clickable button/div pairs with explicit Yes/No text */
+const extractYesNoButtonPairs = (): ExtractedField[] => {
+  const candidates = document.querySelectorAll<HTMLElement>(
+    '[data-field-type="boolean"], [data-yes-no], fieldset'
+  )
+  const fields: ExtractedField[] = []
+
+  candidates.forEach((container, idx) => {
+    if (!isVisible(container)) return
+
+    const clickables = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        'button, [role="button"], [role="radio"], [tabindex="0"]'
+      )
+    ).filter((el) => isVisible(el))
+
+    const optionTexts = clickables.map((el) =>
+      normalizeLabel(el.textContent ?? el.getAttribute("aria-label") ?? "")
+    )
+    const hasYes = optionTexts.some((t) => /^yes$/i.test(t))
+    const hasNo = optionTexts.some((t) => /^no$/i.test(t))
+    if (!hasYes || !hasNo) return
+
+    const label =
+      container.querySelector("label, legend, [class*='label'], [class*='question']")
+        ?.textContent ?? ""
+    if (!normalizeLabel(label)) return
+
+    const selector = getSelector(container) || buildFallbackSelector(container)
+    if (!selector) return
+
+    fields.push({
+      id: `yesno-${idx}`,
+      selector,
+      kind: "radio",
+      label: normalizeLabel(label),
+      name: "",
+      placeholder: "",
+      required: false,
+      options: [
+        { label: "Yes", value: "Yes" },
+        { label: "No", value: "No" }
+      ],
+      currentValue: ""
+    })
+  })
+
+  return fields
+}
+
 export const extractFormSnapshot = (): FormSnapshot => {
   const rawFields = Array.from(
     document.querySelectorAll<HTMLElement>("input, textarea, select")
   )
-  const fields: ExtractedField[] = rawFields
+  const roleRadioFields = extractRoleRadioGroups()
+  const yesNoFields = extractYesNoButtonPairs()
+
+  const nativeFields: ExtractedField[] = rawFields
     .filter((field) => !shouldSkipField(field))
     .filter((field) => !field.hasAttribute("disabled"))
     .filter((field) => isVisible(field))
@@ -208,6 +330,19 @@ export const extractFormSnapshot = (): FormSnapshot => {
         currentValue: getCurrentValue(field)
       }
     })
+
+  const customYesNoFields = [
+    ...extractRoleRadioGroups(),
+    ...extractYesNoButtonPairs()
+  ]
+  const seenSelectors = new Set(nativeFields.map((f) => f.selector))
+  const fields: ExtractedField[] = [...nativeFields]
+  let fieldIndex = nativeFields.length
+  for (const f of customYesNoFields) {
+    if (seenSelectors.has(f.selector)) continue
+    seenSelectors.add(f.selector)
+    fields.push({ ...f, id: `field-${fieldIndex++}` })
+  }
 
   const navigationCandidates = Array.from(
     document.querySelectorAll<HTMLElement>(
