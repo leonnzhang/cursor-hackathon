@@ -18,7 +18,7 @@ const PROFILE_IDS = {
 
 let extractedFields = [];
 let engine = null;
-const DEFAULT_MODEL = "Qwen2-0.5B-Instruct-q4f16_1-MLC";
+const DEFAULT_MODEL = "SmolLM2-360M-Instruct-q4f16_1-MLC";
 
 // Load profile from storage
 async function loadProfile() {

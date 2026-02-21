@@ -12,9 +12,8 @@ type LlmStatus =
   | { state: "error"; detail: string; progress: number; modelId: string }
 
 const PREFERRED_MODEL_HINTS = [
-  "qwen2.5-0.5b",
-  "llama-3.2-1b",
-  "qwen2-0.5b"
+  "smollm2-360m",
+  "smollm2"
 ]
 
 let engine: MLCEngine | null = null
