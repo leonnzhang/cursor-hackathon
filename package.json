@@ -1,0 +1,54 @@
+{
+  "name": "agentic-autofill",
+  "version": "1.0.0",
+  "description": "Agentic autofill/action clicker extension MVP",
+  "scripts": {
+    "dev": "PARCEL_WORKERS=0 plasmo dev",
+    "build": "PARCEL_WORKERS=0 plasmo build",
+    "package": "plasmo package",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "chrome-extension",
+    "plasmo",
+    "webllm",
+    "autofill"
+  ],
+  "author": "",
+  "license": "ISC",
+  "displayName": "Agentic Autofill MVP",
+  "manifest": {
+    "permissions": [
+      "storage",
+      "activeTab",
+      "tabs",
+      "scripting",
+      "sidePanel"
+    ],
+    "host_permissions": [
+      "<all_urls>"
+    ],
+    "action": {
+      "default_title": "Agentic Autofill MVP"
+    },
+    "side_panel": {
+      "default_path": "sidepanel.html"
+    }
+  },
+  "dependencies": {
+    "@mlc-ai/web-llm": "^0.2.81",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@mlc-ai/web-llm": "^0.2.81",
+    "@parcel/config-webextension": "^2.9.3",
+    "@types/chrome": "^0.0.242",
+    "buffer": "^6.0.3",
+    "parcel": "^2.9.3",
+    "plasmo": "^0.90.5",
+    "process": "^0.11.10",
+    "url": "^0.11.1"
+  }
+}

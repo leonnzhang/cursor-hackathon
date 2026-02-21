@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agentic Autofill</title>
+  <link rel="stylesheet" href="panel.css" />
+</head>
+<body>
+  <div class="container">
+    <h1>Agentic Autofill</h1>
+
+    <section class="profile-section">
+      <h2>Profile</h2>
+      <form id="profile-form">
+        <label>Name <input type="text" id="profile-name" placeholder="John Doe" /></label>
+        <label>Email <input type="email" id="profile-email" placeholder="john@example.com" /></label>
+        <label>Phone <input type="tel" id="profile-phone" placeholder="+1 234 567 8900" /></label>
+        <label>Address <input type="text" id="profile-address" placeholder="123 Main St" /></label>
+        <label>City <input type="text" id="profile-city" placeholder="San Francisco" /></label>
+        <label>State/ZIP <input type="text" id="profile-state" placeholder="CA 94102" /></label>
+        <button type="submit">Save Profile</button>
+      </form>
+      <p id="profile-status" class="status"></p>
+    </section>
+
+    <section class="actions-section">
+      <h2>Actions</h2>
+      <button id="select-form-btn">Select Form</button>
+    </section>
+
+    <section class="fields-section" id="fields-section" style="display: none;">
+      <h2>Extracted Fields</h2>
+      <div id="fields-list"></div>
+      <button id="fill-btn">Fill</button>
+    </section>
+
+    <section class="ai-section" id="ai-section" style="display: none;">
+      <button id="suggest-btn">Suggest with AI</button>
+      <div id="ai-loading" class="loading" style="display: none;">Loading model...</div>
+      <div id="ai-error" class="error" style="display: none;"></div>
+    </section>
+  </div>
+  <script type="module" src="panel.js"></script>
+</body>
+</html>
