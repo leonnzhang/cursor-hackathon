@@ -1,6 +1,7 @@
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
   type Dispatch,
@@ -14,16 +15,20 @@ import { buildActionPlan } from "~src/lib/action-engine"
 import { extractFormSnapshot } from "~src/lib/form-extractor"
 import { ensureWhitelisted, executeAction } from "~src/lib/action-executor"
 import {
+  DEFAULT_AGENCY,
   DEFAULT_PROFILE,
   DEFAULT_RESUME,
   loadAgentContext,
+  loadAgency,
   loadProfile,
   loadResume,
   loadWhitelist,
+  saveAgency,
   saveProfile,
   saveResumeRawText,
   saveWhitelist
 } from "~src/lib/storage"
+import type { AgencySettings } from "~src/types/agent"
 import {
   type CuratedModel,
   getCuratedModels,
@@ -98,6 +103,29 @@ const parseWhitelistText = (value: string) =>
     .split(/[\n,]/g)
     .map((item) => item.trim().toLowerCase())
     .filter(Boolean)
+
+const hasMeaningfulValue = (field: { kind: string; currentValue: string }) => {
+  if (field.kind === "checkbox" || field.kind === "radio") {
+    return field.currentValue === "true"
+  }
+  return field.currentValue.trim().length > 0
+}
+
+const MIN_FILLABLE_FIELDS = 2
+
+const debounce = <T extends (...args: unknown[]) => void>(
+  fn: T,
+  ms: number
+): ((...args: Parameters<T>) => void) => {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  return (...args: Parameters<T>) => {
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(() => {
+      timer = null
+      fn(...args)
+    }, ms)
+  }
+}
 
 const nextAction = (actions: AgentAction[], index: number) => {
   if (index < 0 || index >= actions.length) return null
@@ -209,21 +237,29 @@ const FloatingMenu = () => {
   const [curatedModels, setCuratedModels] = useState<CuratedModel[]>([])
   const [selectedModel, setSelectedModel] = useState("")
   const [isWhitelisted, setIsWhitelisted] = useState(true)
+  const [agency, setAgency] = useState<AgencySettings>(DEFAULT_AGENCY)
+  const [toast, setToast] = useState<{ message: string } | null>(null)
 
   const whitelist = useMemo(() => parseWhitelistText(whitelistText), [whitelistText])
   const currentAction = nextAction(actions, currentActionIndex)
+  const onFormCapturedRef = useRef<
+    (snapshot: FormSnapshot, source: "manual" | "auto") => void
+  >(() => {})
 
   useEffect(() => {
     const hydrate = async () => {
-      const [storedProfile, storedResume, storedWhitelist] = await Promise.all([
-        loadProfile(),
-        loadResume(),
-        loadWhitelist(DEFAULT_WHITELIST)
-      ])
+      const [storedProfile, storedResume, storedWhitelist, storedAgency] =
+        await Promise.all([
+          loadProfile(),
+          loadResume(),
+          loadWhitelist(DEFAULT_WHITELIST),
+          loadAgency()
+        ])
       setProfile(storedProfile)
       setResumeText(storedResume.rawText)
       setResumeHighlights(storedResume.parsedHighlights)
       setWhitelistText(storedWhitelist.join("\n"))
+      setAgency(storedAgency)
       setCuratedModels(getCuratedModels())
       const status = getWebLlmStatus()
       setModelStatusMessage(`${status.state}: ${status.detail}`)
@@ -243,6 +279,62 @@ const FloatingMenu = () => {
   useEffect(() => {
     setEditableActionValue(currentAction?.value ?? "")
   }, [currentAction?.id, currentAction?.value])
+
+  useEffect(() => {
+    if (!isWhitelisted || !agency.autoCapture) return
+
+    let lastCapturedKey = ""
+    let lastCapturedAt = 0
+    const CAPTURE_COOLDOWN_MS = 10000
+
+    const tryAutoCapture = () => {
+      const snapshotData = extractFormSnapshot()
+      const emptyCount = snapshotData.fields.filter(
+        (f) => !hasMeaningfulValue(f)
+      ).length
+      if (emptyCount < MIN_FILLABLE_FIELDS) return
+
+      const key = `${snapshotData.url}:${snapshotData.fields.length}`
+      const now = Date.now()
+      if (key === lastCapturedKey && now - lastCapturedAt < CAPTURE_COOLDOWN_MS) {
+        return
+      }
+      lastCapturedKey = key
+      lastCapturedAt = now
+      onFormCapturedRef.current(snapshotData, "auto")
+    }
+
+    const debouncedCapture = debounce(tryAutoCapture, 400)
+
+    const observer = new MutationObserver(() => debouncedCapture())
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true
+    })
+
+    debouncedCapture()
+
+    const onPopState = () => debouncedCapture()
+    window.addEventListener("popstate", onPopState)
+
+    const origPush = history.pushState
+    const origReplace = history.replaceState
+    history.pushState = function (...args) {
+      origPush.apply(this, args)
+      debouncedCapture()
+    }
+    history.replaceState = function (...args) {
+      origReplace.apply(this, args)
+      debouncedCapture()
+    }
+
+    return () => {
+      observer.disconnect()
+      window.removeEventListener("popstate", onPopState)
+      history.pushState = origPush
+      history.replaceState = origReplace
+    }
+  }, [isWhitelisted, agency.autoCapture])
 
   const withBusyState = async (task: () => Promise<void>) => {
     if (isBusy) return
@@ -288,6 +380,13 @@ const FloatingMenu = () => {
     })
   }
 
+  const handleSaveAgency = async () => {
+    await withBusyState(async () => {
+      await saveAgency(agency)
+      setStatusMessage("Agency settings saved.")
+    })
+  }
+
   const handleWarmupModel = async () => {
     await withBusyState(async () => {
       setModelStatusMessage("loading: starting")
@@ -301,20 +400,10 @@ const FloatingMenu = () => {
     })
   }
 
-  const handleExtractForm = async () => {
+  const handlePlanActions = async (snapshotOverride?: FormSnapshot) => {
+    const targetSnapshot = snapshotOverride ?? snapshot
     await withBusyState(async () => {
-      ensureWhitelisted(whitelist)
-      const snapshotData = extractFormSnapshot()
-      setSnapshot(snapshotData)
-      setStatusMessage(
-        `Captured ${snapshotData.fields.length} fields, ${snapshotData.navigationTargets.length} nav controls.`
-      )
-    })
-  }
-
-  const handlePlanActions = async () => {
-    await withBusyState(async () => {
-      if (!snapshot) throw new Error("Capture form first.")
+      if (!targetSnapshot) throw new Error("Capture form first.")
 
       if (!isModelReady()) {
         setStatusMessage("Loading model...")
@@ -332,7 +421,7 @@ const FloatingMenu = () => {
       }
 
       const context = await loadAgentContext()
-      const result = await buildActionPlan(snapshot, context)
+      const result = await buildActionPlan(targetSnapshot, context)
       setActions(result.actions)
       setCurrentActionIndex(0)
       setIsStopped(false)
@@ -340,6 +429,38 @@ const FloatingMenu = () => {
       setStatusMessage(
         `Planned ${result.actions.length} steps (${result.source})`
       )
+    })
+  }
+
+  const onFormCaptured = (
+    snapshotData: FormSnapshot,
+    source: "manual" | "auto"
+  ) => {
+    setSnapshot(snapshotData)
+    setStatusMessage(
+      `Captured ${snapshotData.fields.length} fields, ${snapshotData.navigationTargets.length} nav controls.`
+    )
+    if (agency.autoPlan) {
+      handlePlanActions(snapshotData).catch((err: unknown) => {
+        setStatusMessage(
+          err instanceof Error ? err.message : "Auto-plan failed"
+        )
+      })
+    }
+    if (agency.showCaptureToast && source === "auto") {
+      setToast({
+        message: `Form captured. ${snapshotData.fields.length} fields.`
+      })
+      setTimeout(() => setToast(null), 4000)
+    }
+  }
+  onFormCapturedRef.current = onFormCaptured
+
+  const handleExtractForm = async () => {
+    await withBusyState(async () => {
+      ensureWhitelisted(whitelist)
+      const snapshotData = extractFormSnapshot()
+      onFormCaptured(snapshotData, "manual")
     })
   }
 
@@ -372,6 +493,24 @@ const FloatingMenu = () => {
     })
   }
 
+  useEffect(() => {
+    if (
+      agency.autoExecuteThreshold > 0 &&
+      currentAction &&
+      !isStopped &&
+      !isBusy &&
+      currentAction.confidence >= agency.autoExecuteThreshold
+    ) {
+      handleApproveStep().catch(() => {})
+    }
+  }, [
+    currentAction?.id,
+    currentAction?.confidence,
+    agency.autoExecuteThreshold,
+    isStopped,
+    isBusy
+  ])
+
   const handleSkipStep = () => {
     if (!currentAction) return
     addLog(setLogs, currentAction.id, "skipped", `Skipped ${currentAction.fieldLabel}`)
@@ -392,10 +531,84 @@ const FloatingMenu = () => {
     setStatusMessage("Queue reset.")
   }
 
+  const handleApproveAllAboveThreshold = async () => {
+    const threshold =
+      agency.autoExecuteThreshold > 0 ? agency.autoExecuteThreshold : 0.9
+    const remainder = actions.slice(currentActionIndex)
+    const toApprove = remainder.filter((a) => a.confidence >= threshold)
+    if (toApprove.length === 0) {
+      setStatusMessage("No actions above threshold.")
+      return
+    }
+    let maxIdx = currentActionIndex - 1
+    for (const action of toApprove) {
+      if (isStopped) break
+      const idx = actions.findIndex((a) => a.id === action.id)
+      if (idx < 0) continue
+      await withBusyState(async () => {
+        addLog(setLogs, action.id, "approved", `Approved ${action.fieldLabel}`)
+        try {
+          const detail = executeAction(action)
+          addLog(setLogs, action.id, "executed", detail)
+          setStatusMessage(detail)
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "Execution failed"
+          addLog(setLogs, action.id, "failed", msg)
+        }
+      })
+      maxIdx = Math.max(maxIdx, idx)
+    }
+    setCurrentActionIndex(maxIdx + 1)
+    setStatusMessage(
+      `Approved ${toApprove.length} actions above ${(threshold * 100).toFixed(0)}%.`
+    )
+  }
+
   if (!isWhitelisted) return null
 
   return (
     <div style={baseStyle}>
+      {toast && (
+        <div
+          role="status"
+          style={{
+            position: "fixed",
+            bottom: 72,
+            left: 16,
+            right: 16,
+            maxWidth: 320,
+            padding: "10px 14px",
+            background: "#1f2937",
+            color: "#fff",
+            borderRadius: 8,
+            fontSize: 12,
+            boxShadow: "0 4px 12px rgba(0,0,0,0.2)",
+            zIndex: 2147483645,
+            display: "flex",
+            alignItems: "center",
+            gap: 8
+          }}>
+          {toast.message}
+          <button
+            style={{
+              marginLeft: "auto",
+              padding: "4px 8px",
+              background: "rgba(255,255,255,0.2)",
+              border: "none",
+              borderRadius: 4,
+              color: "#fff",
+              cursor: "pointer",
+              fontSize: 11
+            }}
+            onClick={() => {
+              setActiveTab("run")
+              setExpanded(true)
+              setToast(null)
+            }}>
+            View
+          </button>
+        </div>
+      )}
       {expanded && (
         <div
           style={{
@@ -501,6 +714,69 @@ const FloatingMenu = () => {
                 </section>
 
                 <section style={sectionStyle}>
+                  <strong>Agency</strong>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <input
+                      type="checkbox"
+                      checked={agency.autoCapture}
+                      onChange={(e) =>
+                        setAgency((prev) => ({ ...prev, autoCapture: e.target.checked }))
+                      }
+                    />
+                    Auto capture form
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <input
+                      type="checkbox"
+                      checked={agency.autoPlan}
+                      onChange={(e) =>
+                        setAgency((prev) => ({ ...prev, autoPlan: e.target.checked }))
+                      }
+                    />
+                    Auto-plan after capture
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <input
+                      type="checkbox"
+                      checked={agency.showCaptureToast}
+                      onChange={(e) =>
+                        setAgency((prev) => ({
+                          ...prev,
+                          showCaptureToast: e.target.checked
+                        }))
+                      }
+                    />
+                    Show toast on capture
+                  </label>
+                  <label style={{ display: "block", marginTop: 8, marginBottom: 4 }}>
+                    Auto-execute threshold (0 = off)
+                    <select
+                      style={{ ...inputStyle, cursor: "pointer" }}
+                      value={
+                        agency.autoExecuteThreshold === 0
+                          ? "0"
+                          : String(agency.autoExecuteThreshold)
+                      }
+                      onChange={(e) => {
+                        const v = parseFloat(e.target.value)
+                        setAgency((prev) => ({
+                          ...prev,
+                          autoExecuteThreshold: isNaN(v) ? 0 : v
+                        }))
+                      }}>
+                      <option value="0">Off</option>
+                      <option value="0.8">80%</option>
+                      <option value="0.9">90%</option>
+                      <option value="0.95">95%</option>
+                      <option value="1">100%</option>
+                    </select>
+                  </label>
+                  <button style={buttonStyle} onClick={handleSaveAgency} disabled={isBusy}>
+                    Save agency
+                  </button>
+                </section>
+
+                <section style={sectionStyle}>
                   <strong>Domain Whitelist</strong>
                   <textarea
                     style={{ ...inputStyle, minHeight: 60, resize: "vertical" }}
@@ -539,6 +815,12 @@ const FloatingMenu = () => {
                     </button>
                     <button style={buttonStyle} onClick={handleSkipStep} disabled={isBusy || !currentAction}>
                       Skip
+                    </button>
+                    <button
+                      style={buttonStyle}
+                      onClick={handleApproveAllAboveThreshold}
+                      disabled={isBusy || actions.length === 0 || isStopped}>
+                      Approve all above {agency.autoExecuteThreshold > 0 ? (agency.autoExecuteThreshold * 100).toFixed(0) : 90}%
                     </button>
                     <button style={buttonStyle} onClick={handleStop} disabled={!currentAction}>
                       Stop

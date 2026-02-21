@@ -101,3 +101,11 @@ export interface ActionLogEntry {
   status: "approved" | "skipped" | "executed" | "failed" | "edited" | "stopped"
   detail: string
 }
+
+export interface AgencySettings {
+  autoCapture: boolean
+  autoPlan: boolean
+  showCaptureToast: boolean
+  autoExecuteThreshold: number
+  captureOnFirstFocus: boolean
+}

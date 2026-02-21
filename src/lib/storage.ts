@@ -1,10 +1,26 @@
-import type { AgentContext, ResumeData, UserProfile } from "~src/types/agent"
+import type {
+  AgencySettings,
+  AgentContext,
+  ResumeData,
+  UserProfile
+} from "~src/types/agent"
+
+export type { AgencySettings }
 
 export const STORAGE_KEYS = {
   profile: "agenticAutofill.profile",
   resume: "agenticAutofill.resume",
-  whitelist: "agenticAutofill.whitelist"
+  whitelist: "agenticAutofill.whitelist",
+  agency: "agenticAutofill.agency"
 } as const
+
+export const DEFAULT_AGENCY: AgencySettings = {
+  autoCapture: true,
+  autoPlan: true,
+  showCaptureToast: true,
+  autoExecuteThreshold: 0,
+  captureOnFirstFocus: false
+}
 
 export const DEFAULT_PROFILE: UserProfile = {
   fullName: "",
@@ -117,3 +133,10 @@ export const saveWhitelist = async (whitelist: string[]) => {
 
 export const loadWhitelist = async (fallback: string[]) =>
   getLocal<string[]>(STORAGE_KEYS.whitelist, fallback)
+
+export const loadAgency = async (): Promise<AgencySettings> =>
+  getLocal<AgencySettings>(STORAGE_KEYS.agency, DEFAULT_AGENCY)
+
+export const saveAgency = async (agency: AgencySettings) => {
+  await chrome.storage.local.set({ [STORAGE_KEYS.agency]: agency })
+}
