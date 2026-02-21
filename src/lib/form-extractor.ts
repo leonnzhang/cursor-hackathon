@@ -6,7 +6,7 @@ import type {
   NavigationTarget
 } from "~src/types/agent"
 
-const NAVIGATION_REGEX = /(next|continue|review|apply|save and continue)/i
+const NAVIGATION_REGEX = /(next|continue|review|save and continue)/i
 
 const escapeCss = (value: string) =>
   value.replace(/([ #;?%&,.+*~':"!^$[\]()=>|/@])/g, "\\$1")
