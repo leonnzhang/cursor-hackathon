@@ -46,7 +46,11 @@ const buildFallbackSelector = (element: Element) => {
 
 const getSelector = (element: HTMLElement) => {
   if (element.id) {
-    return `#${escapeCss(element.id)}`
+    const escapedId =
+      typeof CSS !== "undefined" && typeof CSS.escape === "function"
+        ? CSS.escape(element.id)
+        : escapeCss(element.id)
+    return `#${escapedId}`
   }
 
   const name = element.getAttribute("name")

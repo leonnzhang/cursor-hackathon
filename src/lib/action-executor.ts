@@ -13,7 +13,19 @@ const isVisible = (element: HTMLElement) => {
 }
 
 const queryElement = (selector: string) => {
-  const element = document.querySelector(selector) as HTMLElement | null
+  let element: HTMLElement | null = null
+  try {
+    element = document.querySelector(selector) as HTMLElement | null
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (selector.startsWith("#") && selector.length > 1) {
+      const rawId = selector.slice(1)
+      element = document.getElementById(rawId)
+    }
+    if (!element) {
+      throw new Error(`Invalid selector or element not found: ${msg}. Selector: ${selector}`)
+    }
+  }
   if (!element) {
     throw new Error(`Element not found for selector: ${selector}`)
   }
