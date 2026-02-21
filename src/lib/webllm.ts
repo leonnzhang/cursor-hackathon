@@ -101,9 +101,36 @@ const updateStatusFromProgress = (modelId: string, report: InitProgressReport) =
   }
 }
 
+// #region agent log
+const _dbgLog = (msg: string, data: Record<string, unknown>, hypId: string) => {
+  fetch('http://127.0.0.1:7444/ingest/5febb908-5112-4db3-9ca9-07c57ed4c177',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a40af4'},body:JSON.stringify({sessionId:'a40af4',location:'webllm.ts:warmupWebLlm',message:msg,data,hypothesisId:hypId,timestamp:Date.now()})}).catch(()=>{});
+};
+// #endregion
+
 export const warmupWebLlm = async (
   onProgress?: (report: InitProgressReport) => void
 ) => {
+  // #region agent log
+  _dbgLog("warmupWebLlm entry", {
+    hasGpu: "gpu" in navigator,
+    location: typeof location !== "undefined" ? location?.href : "no location",
+    isExtensionContext: typeof chrome !== "undefined" && !!chrome?.runtime?.id
+  }, "H1");
+  try {
+    const testCanvas = typeof OffscreenCanvas !== "undefined"
+      ? new OffscreenCanvas(1, 1)
+      : document.createElement("canvas");
+    const ctx = testCanvas.getContext?.("webgpu");
+    _dbgLog("canvas getContext(webgpu) test", {
+      canvasType: typeof OffscreenCanvas !== "undefined" ? "OffscreenCanvas" : "HTMLCanvasElement",
+      ctxIsNull: ctx === null,
+      ctxType: ctx ? typeof ctx : "null"
+    }, "H1");
+  } catch (e) {
+    _dbgLog("canvas test threw", { err: String(e) }, "H1");
+  }
+  // #endregion
+
   if (!("gpu" in navigator)) {
     status = {
       state: "error",
@@ -131,6 +158,10 @@ export const warmupWebLlm = async (
     modelId
   }
 
+  // #region agent log
+  _dbgLog("calling CreateMLCEngine", { modelId }, "H3");
+  // #endregion
+
   pendingLoad = CreateMLCEngine(modelId, {
     initProgressCallback: (report) => {
       updateStatusFromProgress(modelId, report)
@@ -149,6 +180,14 @@ export const warmupWebLlm = async (
       return loadedEngine
     })
     .catch((error: unknown) => {
+      // #region agent log
+      _dbgLog("CreateMLCEngine failed", {
+        errMsg: error instanceof Error ? error.message : String(error),
+        errName: error instanceof Error ? error.name : "unknown",
+        stack: error instanceof Error ? error.stack : undefined,
+        location: typeof location !== "undefined" ? location?.href : "no location"
+      }, "H3");
+      // #endregion
       pendingLoad = null
       status = {
         state: "error",
@@ -197,6 +236,26 @@ export const runWebLlmPrompt = async (
     temperature: 0.1,
     max_tokens: 1500,
     response_format: responseFormat
+  })
+
+  const content = completion.choices?.[0]?.message?.content
+  return normalizeAssistantText(content)
+}
+
+export const runWebLlmTextGeneration = async (
+  systemPrompt: string,
+  userPrompt: string
+) => {
+  const loadedEngine = await warmupWebLlm()
+
+  const completion = await loadedEngine.chat.completions.create({
+    model: currentModelId,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt }
+    ],
+    temperature: 0.5,
+    max_tokens: 2000
   })
 
   const content = completion.choices?.[0]?.message?.content

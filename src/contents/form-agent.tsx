@@ -420,7 +420,7 @@ const FloatingMenu = () => {
         }
       }
 
-      const context = await loadAgentContext()
+      const context = await loadAgentContext(targetSnapshot.jobContext)
       const result = await buildActionPlan(targetSnapshot, context)
       setActions(result.actions)
       setCurrentActionIndex(0)
@@ -437,8 +437,11 @@ const FloatingMenu = () => {
     source: "manual" | "auto"
   ) => {
     setSnapshot(snapshotData)
+    const jobNote = snapshotData.jobContext?.companyName || snapshotData.jobContext?.jobTitle
+      ? ` (${[snapshotData.jobContext.jobTitle, snapshotData.jobContext.companyName].filter(Boolean).join(" @ ")})`
+      : ""
     setStatusMessage(
-      `Captured ${snapshotData.fields.length} fields, ${snapshotData.navigationTargets.length} nav controls.`
+      `Captured ${snapshotData.fields.length} fields, ${snapshotData.navigationTargets.length} nav controls.${jobNote}`
     )
     if (agency.autoPlan) {
       handlePlanActions(snapshotData).catch((err: unknown) => {

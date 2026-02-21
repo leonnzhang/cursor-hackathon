@@ -2,6 +2,7 @@ import { z } from "zod"
 
 import type { AgentContext, AgentAction, ExtractedField, FormSnapshot, PlanResult } from "~src/types/agent"
 import { runWebLlmPrompt } from "~src/lib/webllm"
+import { isGenerativeField, generateFieldContent } from "~src/lib/content-generator"
 
 const llmActionSchema = z.object({
   selector: z.string().min(1),
@@ -40,8 +41,7 @@ const PROFILE_HINTS: Array<{ key: keyof AgentContext["profile"]; hints: string[]
   { key: "currentTitle", hints: ["title", "current role", "position"] },
   { key: "yearsExperience", hints: ["years", "experience"] },
   { key: "workAuthorization", hints: ["work authorization", "authorized", "visa"] },
-  { key: "needsSponsorship", hints: ["sponsorship", "sponsor"] },
-  { key: "summary", hints: ["summary", "about", "cover letter"] }
+  { key: "needsSponsorship", hints: ["sponsorship", "sponsor"] }
 ]
 
 const composeLocationString = (profile: AgentContext["profile"]) =>
@@ -282,14 +282,6 @@ const findProfileValueForField = (field: ExtractedField, context: AgentContext) 
     if (composed) return composed
   }
 
-  if (combined.includes("cover letter") && context.resume.rawText) {
-    return context.resume.rawText.slice(0, 1200)
-  }
-
-  if (combined.includes("summary")) {
-    return context.profile.summary || context.resume.parsedHighlights.join(" ")
-  }
-
   return ""
 }
 
@@ -369,9 +361,9 @@ const convertFieldToAction = (
 const buildRuleBasedPlan = (snapshot: FormSnapshot, context: AgentContext): AgentAction[] => {
   const fieldActions = snapshot.fields
     .map((field) => {
-      if (hasMeaningfulValue(field)) {
-        return null
-      }
+      if (hasMeaningfulValue(field)) return null
+      const fieldLabel = field.label || field.name || field.placeholder || ""
+      if (isGenerativeField(fieldLabel, field.kind)) return null
       const rawValue = findProfileValueForField(field, context)
       return convertFieldToAction(field, rawValue, "rule-based", 0.62)
     })
@@ -480,6 +472,8 @@ const buildHybridUserPrompt = (
 
   for (const field of snapshot.fields) {
     if (hasMeaningfulValue(field)) continue
+    const fieldLabel = field.label || field.name || field.placeholder || ""
+    if (isGenerativeField(fieldLabel, field.kind)) continue
     const ruleAction = ruleMap.get(field.selector)
     const preAction = preResolvedMap.get(field.selector)
     const filledValue = preAction?.value ?? ruleAction?.value
@@ -496,9 +490,13 @@ const buildHybridUserPrompt = (
     .map((n) => `${n.selector} | ${n.text}`)
     .join("\n")
 
+  const jobLine = context.jobContext.jobTitle || context.jobContext.companyName
+    ? `JOB: ${context.jobContext.jobTitle}${context.jobContext.companyName ? ` at ${context.jobContext.companyName}` : ""}`
+    : ""
+
   return `PROFILE: ${JSON.stringify(context.profile)}
 RESUME HIGHLIGHTS: ${context.resume.parsedHighlights.slice(0, 5).join("; ")}
-
+${jobLine ? jobLine + "\n" : ""}
 PRE-FILLED (review for correctness — fix any that are wrong for the field type):
 ${prefilledLines.length ? prefilledLines.join("\n") : "(none)"}
 
@@ -591,6 +589,41 @@ const appendNavAction = (
   }
 }
 
+const generateContentForFields = async (
+  snapshot: FormSnapshot,
+  context: AgentContext,
+  mergedActions: Map<string, AgentAction>
+): Promise<number> => {
+  const generativeFields = snapshot.fields.filter((field) => {
+    if (hasMeaningfulValue(field)) return false
+    const fieldLabel = field.label || field.name || field.placeholder || ""
+    return isGenerativeField(fieldLabel, field.kind)
+  })
+
+  let generated = 0
+  for (const field of generativeFields) {
+    const fieldLabel = field.label || field.name || field.placeholder || ""
+    try {
+      const content = await generateFieldContent(fieldLabel, context)
+      if (content) {
+        mergedActions.set(field.selector, {
+          id: crypto.randomUUID(),
+          type: "setValue",
+          selector: field.selector,
+          fieldLabel: field.label || field.name || "text field",
+          value: content,
+          reasoning: "Generated from resume + job context",
+          confidence: 0.75
+        })
+        generated++
+      }
+    } catch {
+      /* skip failed generation, LLM planning may still handle it */
+    }
+  }
+  return generated
+}
+
 export const buildActionPlan = async (
   snapshot: FormSnapshot,
   context: AgentContext
@@ -613,6 +646,12 @@ export const buildActionPlan = async (
     }
   }
 
+  const generatedCount = await generateContentForFields(
+    snapshot,
+    context,
+    mergedActions
+  )
+
   const totalFields = snapshot.fields.filter((f) => !hasMeaningfulValue(f)).length
 
   // Attempt 1: full hybrid prompt with structured JSON output
@@ -625,10 +664,11 @@ export const buildActionPlan = async (
     if (parsed && parsed.length > 0) {
       const llmCount = mergeLlmActions(parsed, snapshot, allowedSelectors, mergedActions)
       appendNavAction(snapshot, mergedActions)
+      const genNote = generatedCount > 0 ? `, ${generatedCount} generated` : ""
       return {
         source: "hybrid",
         actions: sortActions(Array.from(mergedActions.values())),
-        llmDetail: `LLM refined ${llmCount}/${totalFields} fields`
+        llmDetail: `LLM refined ${llmCount}/${totalFields} fields${genNote}`
       }
     }
     llmError = `LLM returned unparseable output (${raw.length} chars)`
@@ -649,10 +689,11 @@ export const buildActionPlan = async (
     if (parsed && parsed.length > 0) {
       const llmCount = mergeLlmActions(parsed, snapshot, allowedSelectors, mergedActions)
       appendNavAction(snapshot, mergedActions)
+      const genNote = generatedCount > 0 ? `, ${generatedCount} generated` : ""
       return {
         source: "hybrid",
         actions: sortActions(Array.from(mergedActions.values())),
-        llmDetail: `LLM retry succeeded: refined ${llmCount}/${totalFields} fields (first attempt: ${llmError})`
+        llmDetail: `LLM retry succeeded: refined ${llmCount}/${totalFields} fields${genNote} (first attempt: ${llmError})`
       }
     }
     llmError += "; retry also returned unparseable output"
@@ -660,11 +701,12 @@ export const buildActionPlan = async (
     llmError += `; retry failed: ${retryError instanceof Error ? retryError.message : "unknown"}`
   }
 
-  // Fallback: rule-based + pre-resolved only
+  // Fallback: rule-based + pre-resolved + generated content
   appendNavAction(snapshot, mergedActions)
+  const genNote = generatedCount > 0 ? ` (${generatedCount} fields generated)` : ""
   return {
-    source: "rule-based",
+    source: generatedCount > 0 ? "hybrid" : "rule-based",
     actions: sortActions(Array.from(mergedActions.values())),
-    llmDetail: `Fell back to rule-based: ${llmError}`
+    llmDetail: `Fell back to rule-based${genNote}: ${llmError}`
   }
 }

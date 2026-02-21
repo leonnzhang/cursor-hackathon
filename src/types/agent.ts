@@ -40,6 +40,7 @@ export interface FormSnapshot {
   capturedAt: number
   fields: ExtractedField[]
   navigationTargets: NavigationTarget[]
+  jobContext: JobContext
 }
 
 export interface UserProfile {
@@ -61,14 +62,27 @@ export interface UserProfile {
   summary: string
 }
 
+export interface ResumeSection {
+  heading: string
+  content: string
+}
+
 export interface ResumeData {
   rawText: string
   parsedHighlights: string[]
+  sections: ResumeSection[]
+}
+
+export interface JobContext {
+  jobTitle: string
+  companyName: string
+  descriptionSnippet: string
 }
 
 export interface AgentContext {
   profile: UserProfile
   resume: ResumeData
+  jobContext: JobContext
 }
 
 export type ActionType =

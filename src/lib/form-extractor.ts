@@ -5,6 +5,7 @@ import type {
   FormSnapshot,
   NavigationTarget
 } from "~src/types/agent"
+import { extractJobContext } from "~src/lib/job-context"
 
 const NAVIGATION_REGEX = /(next|continue|review|save and continue)/i
 
@@ -233,6 +234,7 @@ export const extractFormSnapshot = (): FormSnapshot => {
     title: document.title,
     capturedAt: Date.now(),
     fields,
-    navigationTargets
+    navigationTargets,
+    jobContext: extractJobContext()
   }
 }

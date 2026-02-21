@@ -1,7 +1,9 @@
 import type {
   AgencySettings,
   AgentContext,
+  JobContext,
   ResumeData,
+  ResumeSection,
   UserProfile
 } from "~src/types/agent"
 
@@ -43,7 +45,14 @@ export const DEFAULT_PROFILE: UserProfile = {
 
 export const DEFAULT_RESUME: ResumeData = {
   rawText: "",
-  parsedHighlights: []
+  parsedHighlights: [],
+  sections: []
+}
+
+export const EMPTY_JOB_CONTEXT: JobContext = {
+  jobTitle: "",
+  companyName: "",
+  descriptionSnippet: ""
 }
 
 const getLocal = async <T>(key: string, fallback: T): Promise<T> => {
@@ -111,20 +120,62 @@ export const parseResumeHighlights = (rawText: string) => {
     .slice(0, 8)
 }
 
+const SECTION_HEADING_RE =
+  /^(?:#{1,3}\s+)?(?:[A-Z][A-Z &/,]{2,}|(?:experience|education|skills|projects|summary|objective|certifications?|awards?|publications?|languages?|interests?|volunteer|activities|professional\s+experience|work\s+history|technical\s+skills|core\s+competencies|professional\s+summary|career\s+objective)\b.*):?\s*$/i
+
+export const parseResumeSections = (rawText: string): ResumeSection[] => {
+  const lines = rawText.split(/\r?\n/)
+  const sections: ResumeSection[] = []
+  let currentHeading = "GENERAL"
+  let currentLines: string[] = []
+
+  const flush = () => {
+    const content = currentLines.join("\n").trim()
+    if (content) {
+      sections.push({ heading: currentHeading, content })
+    }
+    currentLines = []
+  }
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (SECTION_HEADING_RE.test(trimmed) && trimmed.length < 60) {
+      flush()
+      currentHeading = trimmed.replace(/^#{1,3}\s+/, "").replace(/:?\s*$/, "").toUpperCase()
+    } else {
+      currentLines.push(trimmed)
+    }
+  }
+  flush()
+
+  return sections
+}
+
 export const saveResumeRawText = async (rawText: string) => {
   const resume: ResumeData = {
     rawText,
-    parsedHighlights: parseResumeHighlights(rawText)
+    parsedHighlights: parseResumeHighlights(rawText),
+    sections: parseResumeSections(rawText)
   }
   await chrome.storage.local.set({ [STORAGE_KEYS.resume]: resume })
 }
 
-export const loadResume = async () =>
-  getLocal<ResumeData>(STORAGE_KEYS.resume, DEFAULT_RESUME)
+export const loadResume = async (): Promise<ResumeData> => {
+  const stored = await getLocal<ResumeData>(STORAGE_KEYS.resume, DEFAULT_RESUME)
+  if (stored.rawText && (!stored.sections || stored.sections.length === 0)) {
+    return {
+      ...stored,
+      sections: parseResumeSections(stored.rawText)
+    }
+  }
+  return stored
+}
 
-export const loadAgentContext = async (): Promise<AgentContext> => {
+export const loadAgentContext = async (
+  jobContext: JobContext = EMPTY_JOB_CONTEXT
+): Promise<AgentContext> => {
   const [profile, resume] = await Promise.all([loadProfile(), loadResume()])
-  return { profile, resume }
+  return { profile, resume, jobContext }
 }
 
 export const saveWhitelist = async (whitelist: string[]) => {
